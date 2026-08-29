@@ -1,6 +1,6 @@
 # SPEC — Scriptorium: a PDF + Audio Library SaaS on Next.js, Supabase, and Vercel
 
-> **Status:** **P0 and P1 built and verified** against a live Supabase project (2026-08-29); P2 onward specified, not built.
+> **Status:** **P0, P1 and P2 built and verified** against a live Supabase project (2026-08-29); P3 onward specified, not built.
 > Implementation: [`../scriptorium`](../scriptorium).  Working name **Scriptorium** (proposed).
 > **Written:** 2026-08-29 · **Spec version:** 3.2.0
 > **Repo:** `/Volumes/181TB/Developers-LLC/life.os` · **Siblings:** [SPEC.1.md](SPEC.1.md), [SPEC.2.md](SPEC.2.md) (the iOS Bible-study app; different product, same house style)
@@ -343,7 +343,16 @@ Browser → GET /api/content/{id}/url
             └─ createSignedUrl(path, ttl) ──→ 200 { url, expiresAt }
 ```
 
-TTL by kind: **PDF 5 minutes** (fetched once, immediately), **audio 4 hours** (a long listen must not expire mid-session).
+TTL is a function of **(kind, purpose)**, not kind alone:
+
+| | read | download |
+|---|---|---|
+| PDF | **2 hours** | **5 minutes** |
+| audio | **4 hours** | **4 hours** |
+
+The original "PDF = 5 minutes, it is fetched once immediately" holds for *downloading* and is wrong
+for *reading*: pdf.js lazily range-fetches pages across an entire session, so a 5-minute URL dies
+mid-read on any large document. Reading gets a session-length TTL; downloading keeps the short one.
 
 The client caches the URL until `expiresAt` and re-requests when it lapses. The audio player also re-requests on any 403 during seek, which is the belt to that TTL's braces.
 
@@ -423,8 +432,18 @@ worthless within the length of a coffee break.
 - **Text layer enabled** — mandatory, because §8.3 anchors to selected text.
 - Continuous scroll and single-page modes; fit-width, fit-page, pinch zoom.
 - Keyboard: arrows, `j`/`k`, `g` to jump, `/` to search.
-- **Progress written on a debounce** (~3 s idle, or on unmount), not on every scroll event.
-- Resume prompt on reopen: *"Continue from page 47?"*
+- **Progress written on a debounce** (~3 s idle, or on unmount), not on every scroll event, and
+  flushed via `sendBeacon` on `pagehide`/`visibilitychange` so closing the tab keeps your place.
+- **Current page is computed from scroll position, ranked by visible area** — not by
+  `IntersectionObserver`, and not by `intersectionRatio`. IO does not fire while the document is
+  hidden, which is precisely when the unload flush needs an accurate page; and a page taller than
+  the viewport can never reach a high ratio, so ratio ranking picks the wrong page. `requestAnimationFrame`
+  is also throttled to a stop in hidden tabs, so the scroll throttle is timestamp-based.
+- **The resume decision is made on the server and expressed as `?page=N`.** The banner is
+  server-rendered (no flash, no pdf.js dependency) and a resumed position is a shareable,
+  bookmarkable URL. An explicit `?page=` suppresses the prompt.
+- **The reader is loaded with `ssr: false`.** pdf.js needs `DOMMatrix`, which does not exist on the
+  server; without this the route 500s.
 - Full-text search within the document via pdf.js's own index.
 
 ### 8.3 Reading bookmarks — *your item 3*
@@ -625,7 +644,7 @@ Notes: the persistent player docks at the bottom across every route. Dark mode i
 |---|---|---|
 | **P0** ✅ | Scaffold | **DONE 2026-08-29.** 9 tables live on PostgreSQL 17.6, RLS on all 9 with 10 policies, signup trigger, both buckets, Supabase Auth sign-in verified 7/7 end to end, `/library` renders empty |
 | **P1** ✅ | Upload + download, both formats | **DONE 2026-08-29.** 16/16 storage + validation checks and 13/13 HTTP gate checks green against the live project: magic-byte validation rejects forged files, oversize refused pre-ticket, admin gate returns 401/403/200 correctly, serving gate returns 401 → 404 (draft) → 402 (unentitled) → 200 + signed URL in that order, PDF TTL 5 min |
-| **P2** | Reader | PDF renders, progress persists across sessions, resume prompt works |
+| **P2** ✅ | Reader | **DONE 2026-08-29.** 18/18 automated checks plus browser verification: 8 pages render with live text layers (24 selectable spans), scroll tracking updates the page counter, position persists on a 3s debounce, and the resume prompt returns the reader to the saved page |
 | **P3** | Bookmarks + journals (reading) | Highlight survives a re-uploaded PDF via text recovery |
 | **P4** | Stripe | Full webhook suite green; subscribe, cancel, and lapse all produce correct entitlement |
 | **P5** | Audio | **Range-request gate (§4.4) confirmed first.** Player survives navigation, position persists, Media Session controls work |
@@ -682,3 +701,8 @@ auth exercised end to end against the live project). Everything from P1 onward i
    prevent. Set the pooler URL before the first deploy.
 5. `server-only` belongs on modules that touch secrets, not on pure constant registries. Marking
    the format registry made it unimportable from tests for no security gain.
+6. Seeding `numPages` from the DB page count means `setNumPages(n)` on document load is often a
+   no-op; React bails out and any effect keyed on `numPages` never re-runs. Key page-tracking
+   effects on a separate `docLoaded` flag.
+7. React SSR emits `<!-- -->` between static text and interpolated values, so `Continue from page 11`
+   is not a literal substring of the HTML. Strip comment markers before asserting on rendered text.

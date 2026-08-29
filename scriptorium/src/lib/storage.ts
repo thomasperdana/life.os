@@ -4,13 +4,21 @@ import { FORMATS, type ContentKind } from '@/lib/content-format'
 
 export const CONTENT_BUCKET = 'content'
 
-/** Signed-URL TTLs — SPEC.3.md §7.3, §8.6. */
-export const TTL_SECONDS = {
-  /** Fetched once, immediately. A leaked URL dies within a coffee break. */
-  pdf: 5 * 60,
-  /** A long listen must not expire mid-session. */
-  audio: 4 * 60 * 60,
-} as const satisfies Record<ContentKind, number>
+/**
+ * Signed-URL TTLs — SPEC.3.md §7.3, §8.6.
+ *
+ * TTL is a function of (kind, purpose), not kind alone. The spec's original
+ * "PDF = 5 minutes, it's fetched once immediately" holds for DOWNLOAD, but not
+ * for READ: pdf.js lazily fetches page ranges across a whole session, so a
+ * 5-minute URL dies mid-read on any large document. Reading gets a session-
+ * length TTL; downloading keeps the short one.
+ */
+export type UrlPurpose = 'read' | 'download'
+
+export const TTL_SECONDS: Record<ContentKind, Record<UrlPurpose, number>> = {
+  pdf:   { read: 2 * 60 * 60, download: 5 * 60 },
+  audio: { read: 4 * 60 * 60, download: 4 * 60 * 60 },
+}
 
 export async function createUploadTicket(path: string) {
   const supabase = createAdminClient()
@@ -24,14 +32,16 @@ export async function createUploadTicket(path: string) {
 export async function createDownloadUrl(
   path: string,
   kind: ContentKind,
-  opts?: { download?: string },
+  opts?: { download?: string; purpose?: UrlPurpose },
 ) {
+  const purpose: UrlPurpose = opts?.purpose ?? (opts?.download ? 'download' : 'read')
+  const ttl = TTL_SECONDS[kind][purpose]
   const supabase = createAdminClient()
   const { data, error } = await supabase.storage
     .from(CONTENT_BUCKET)
-    .createSignedUrl(path, TTL_SECONDS[kind], opts)
+    .createSignedUrl(path, ttl, opts?.download ? { download: opts.download } : undefined)
   if (error) throw new Error(`createSignedUrl: ${error.message}`)
-  return { url: data.signedUrl, expiresAt: new Date(Date.now() + TTL_SECONDS[kind] * 1000) }
+  return { url: data.signedUrl, expiresAt: new Date(Date.now() + ttl * 1000), ttl }
 }
 
 export async function removeObject(path: string) {
@@ -46,7 +56,7 @@ export async function removeObject(path: string) {
  * Supabase honours Range, which audio seeking depends on entirely.
  */
 export async function readPrefix(path: string, kind: ContentKind, bytes = 64 * 1024) {
-  const { url } = await createDownloadUrl(path, kind)
+  const { url } = await createDownloadUrl(path, kind, { purpose: 'read' })
   const res = await fetch(url, { headers: { Range: `bytes=0-${bytes - 1}` } })
   if (!res.ok) throw new Error(`readPrefix: HTTP ${res.status}`)
   return {
@@ -58,7 +68,7 @@ export async function readPrefix(path: string, kind: ContentKind, bytes = 64 * 1
 
 /** Full object fetch. Ingest only — never on a serving path (§7.3). */
 export async function readWhole(path: string, kind: ContentKind) {
-  const { url } = await createDownloadUrl(path, kind)
+  const { url } = await createDownloadUrl(path, kind, { purpose: 'read' })
   const res = await fetch(url)
   if (!res.ok) throw new Error(`readWhole: HTTP ${res.status}`)
   return new Uint8Array(await res.arrayBuffer())

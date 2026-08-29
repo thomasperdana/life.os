@@ -42,3 +42,9 @@ Find cross-references for John 3:16 that relate to the themes of God's love, the
 Compare John 3:16 in the KJV, NIV, and ESV. What are the key differences in translation and what are the potential implications of these differences?
 
 Summarize the main theological points of John 3:16 KJV based on our study. How can I apply these truths to my life?
+
+
+
+https://github.com/thomasperdana/life.os/tree/main/scriptorium
+https://supabase.com/dashboard/project/vkbosgojzcwmskuymlxu/settings/general
+https://vercel.com/thomas-perdanas-projects/life-os

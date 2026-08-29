@@ -1,3 +1,4 @@
+import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { and, asc, eq } from 'drizzle-orm'
 import { db, contentItems } from '@/db'
@@ -44,17 +45,38 @@ export default async function LibraryPage() {
         </div>
       ) : (
         <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {items.map((item) => (
-            <li key={item.id} className="rounded-lg border border-black/10 dark:border-white/15 p-4 space-y-2">
-              <p className="text-xs uppercase tracking-wide text-black/50 dark:text-white/50">
-                {item.kind} {item.series ? `· ${item.series}` : ''}
-              </p>
-              <h2 className="font-medium leading-snug">{item.title}</h2>
-              {item.accessTier === 'subscriber' && entitlement === 'free' && (
-                <p className="text-xs text-amber-700 dark:text-amber-400">Subscribers only</p>
-              )}
-            </li>
-          ))}
+          {items.map((item) => {
+            const locked = item.accessTier === 'subscriber' && entitlement === 'free'
+            const href = item.kind === 'pdf' ? `/read/${item.slug}` : `/listen/${item.slug}`
+            const body = (
+              <>
+                <p className="text-xs uppercase tracking-wide text-black/50 dark:text-white/50">
+                  {item.kind} {item.series ? `· ${item.series}` : ''}
+                </p>
+                <h2 className="font-medium leading-snug">{item.title}</h2>
+                <p className="text-xs text-black/50 dark:text-white/50 tabular-nums">
+                  {item.kind === 'pdf'
+                    ? item.pageCount ? `${item.pageCount} pages` : ''
+                    : item.durationSeconds ? `${Math.round(item.durationSeconds / 60)} min` : ''}
+                </p>
+                {locked && <p className="text-xs text-amber-700 dark:text-amber-400">Subscribers only</p>}
+              </>
+            )
+            return (
+              <li key={item.id}>
+                {locked ? (
+                  <div className="rounded-lg border border-black/10 dark:border-white/15 p-4 space-y-2 opacity-70">
+                    {body}
+                  </div>
+                ) : (
+                  <Link href={href}
+                    className="block rounded-lg border border-black/10 dark:border-white/15 p-4 space-y-2 hover:border-black/30 dark:hover:border-white/40 transition-colors">
+                    {body}
+                  </Link>
+                )}
+              </li>
+            )
+          })}
         </ul>
       )}
     </main>
