@@ -3,6 +3,7 @@ import { and, desc, eq, gt, sql as raw } from 'drizzle-orm'
 import { db, reviews, contentItems, progress, profiles } from '@/db'
 import { currentUserId } from '@/lib/session'
 import { moderateReview, MAX_BODY_LENGTH } from '@/lib/moderation'
+import { rateLimit, limitResponse } from '@/lib/ratelimit'
 
 export const runtime = 'nodejs'
 
@@ -53,6 +54,9 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   const userId = await currentUserId()
   if (!userId) return new Response(null, { status: 401 })
+
+  const limited = await rateLimit(`review:${userId}`, 10, 3600)
+  if (!limited.allowed) return limitResponse(limited)
 
   const parsed = Body.safeParse(await req.json().catch(() => null))
   if (!parsed.success) {

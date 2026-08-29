@@ -3,7 +3,9 @@ import { redirect } from 'next/navigation'
 import { and, asc, eq } from 'drizzle-orm'
 import { db, contentItems } from '@/db'
 import { createClient } from '@/lib/supabase/server'
-import { getEntitlement } from '@/lib/entitlement'
+import { getEntitlement, unitKeyFor } from '@/lib/entitlement'
+import { itemEntitlements } from '@/db'
+import { ClaimButton } from './ClaimButton'
 import { signOut } from '../(auth)/actions'
 
 export default async function LibraryPage() {
@@ -13,6 +15,11 @@ export default async function LibraryPage() {
 
   // Fence one (§5.2): entitlement is decided here, on the server, every time.
   const entitlement = await getEntitlement(user.id)
+
+  const owned = new Set(
+    (await db.select({ unitKey: itemEntitlements.unitKey }).from(itemEntitlements)
+      .where(eq(itemEntitlements.userId, user.id))).map((r) => r.unitKey),
+  )
 
   const items = await db
     .select()
@@ -26,7 +33,10 @@ export default async function LibraryPage() {
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold tracking-tight">Library</h1>
           <p className="text-sm text-black/60 dark:text-white/60">
-            {user.email} · {entitlement === 'subscriber' ? 'Subscriber' : 'Free account'}
+            {user.email} · {entitlement.plan === 'full' ? 'Unlimited'
+            : entitlement.plan === 'bundle'
+              ? `Starter bundle · ${entitlement.remaining} of ${entitlement.slots} slots left`
+              : 'Free account'}
           </p>
         </div>
         <form action={signOut}>
@@ -46,7 +56,10 @@ export default async function LibraryPage() {
       ) : (
         <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {items.map((item) => {
-            const locked = item.accessTier === 'subscriber' && entitlement === 'free'
+            const unit = unitKeyFor(item)
+            const isOwned = owned.has(unit)
+            const locked = item.accessTier === 'subscriber'
+              && entitlement.plan !== 'full' && !isOwned
             const href = item.kind === 'pdf' ? `/read/${item.slug}` : `/listen/${item.slug}`
             const body = (
               <>
@@ -59,14 +72,24 @@ export default async function LibraryPage() {
                     ? item.pageCount ? `${item.pageCount} pages` : ''
                     : item.durationSeconds ? `${Math.round(item.durationSeconds / 60)} min` : ''}
                 </p>
-                {locked && <p className="text-xs text-amber-700 dark:text-amber-400">Subscribers only</p>}
+                {locked && (
+                  <p className="text-xs text-amber-700 dark:text-amber-400">
+                    {entitlement.remaining > 0 ? 'Locked · a slot is available' : 'Locked'}
+                  </p>
+                )}
+                {isOwned && entitlement.plan !== 'full' && (
+                  <p className="text-xs text-green-700 dark:text-green-400">Yours</p>
+                )}
               </>
             )
             return (
               <li key={item.id}>
                 {locked ? (
-                  <div className="rounded-lg border border-black/10 dark:border-white/15 p-4 space-y-2 opacity-70">
-                    {body}
+                  <div className="rounded-lg border border-black/10 dark:border-white/15 p-4 space-y-2">
+                    <div className="opacity-70">{body}</div>
+                    {entitlement.remaining > 0 && (
+                      <ClaimButton itemId={item.id} title={item.title} remaining={entitlement.remaining} />
+                    )}
                   </div>
                 ) : (
                   <Link href={href}

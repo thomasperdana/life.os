@@ -85,6 +85,9 @@ export const contentItems = pgTable('content_items', {
   pageCount: integer('page_count'),              // pdf only
   durationSeconds: integer('duration_seconds'),  // audio only
 
+  /** Items sharing a pair_key are ONE purchasable unit (a PDF and its MP3). */
+  pairKey: text('pair_key'),
+
   accessTier: accessTier('access_tier').notNull().default('subscriber'),
   status: contentStatus('status').notNull().default('draft'),
 
@@ -165,6 +168,26 @@ export const reviews = pgTable('reviews', {
   uniqueIndex('reviews_one_per_user_item').on(t.userId, t.itemId),
   check('review_rating_range', sql`${t.rating} BETWEEN 1 AND 5`),
 ])
+
+/** A completed one-time payment and the number of units it granted. */
+export const purchases = pgTable('purchases', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => profiles.id, { onDelete: 'cascade' }),
+  stripeSessionId: text('stripe_session_id').unique(),
+  stripePaymentIntent: text('stripe_payment_intent'),
+  priceId: text('price_id'),
+  slots: integer('slots').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index('purchases_user').on(t.userId)])
+
+/** Which unit a user has claimed against their purchased slots. */
+export const itemEntitlements = pgTable('item_entitlements', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => profiles.id, { onDelete: 'cascade' }),
+  unitKey: text('unit_key').notNull(),
+  purchaseId: uuid('purchase_id').references(() => purchases.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex('item_entitlements_one_per_unit').on(t.userId, t.unitKey)])
 
 /** A published review returns to the queue when someone reports it (§10.2). */
 export const reviewReports = pgTable('review_reports', {

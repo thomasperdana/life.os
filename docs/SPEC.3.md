@@ -1,6 +1,7 @@
 # SPEC — Scriptorium: a PDF + Audio Library SaaS on Next.js, Supabase, and Vercel
 
-> **Status:** **P0–P7 built and verified** against a live Supabase project (2026-08-29); P8 remains.
+> **Status:** **P0–P8 built and verified** against a live Supabase project (2026-08-29).
+> The one gap is Stripe Checkout + Customer Portal, which need `sk_test_` keys and price ids (§14 P4).
 > Stripe's webhook handler is fully verified offline with real signatures; Checkout and the Customer Portal need live API keys and are **not** yet exercised.
 > Implementation: [`../scriptorium`](../scriptorium).  Working name **Scriptorium** (proposed).
 > **Written:** 2026-08-29 · **Spec version:** 3.2.0
@@ -187,6 +188,20 @@ Three vendors, not five. The old design needed GitHub for source, R2 for cache, 
 
 The distinction that matters: **RLS is defense in depth, not the entitlement system.** It stops a leaked anon key from exposing another user's journal. It does not know what a subscription is. Do not encode billing logic in policies — it will drift from Stripe and you will not notice.
 
+> **A vulnerability this suite actually found (2026-08-29).** The original policy
+> `for update using (auth.uid() = id)` let any signed-in user update their own `profiles` row
+> **including the `role` column** — so anyone could set `role='admin'` with the public anon key and
+> take the admin surface: uploads, moderation, bans. **RLS policies cannot restrict which columns
+> an update touches.** Column-level `GRANT`s can, and are the correct tool:
+>
+> ```sql
+> revoke update on public.profiles from authenticated, anon;
+> grant  update (display_name, avatar_url) on public.profiles to authenticated;
+> ```
+>
+> The lesson generalises: any table with a privilege column needs column-level grants, not just a
+> row-level policy. This is why §13's RLS suite is not optional.
+
 **The service-role key bypasses RLS entirely.** It is a server-only secret, never in a `NEXT_PUBLIC_` variable, never imported into a Client Component, never sent to the browser under any circumstance.
 
 ---
@@ -363,7 +378,15 @@ The client caches the URL until `expiresAt` and re-requests when it lapses. The 
 
 The old §7.4 argued for Cloudflare R2 in front of GitHub for three reasons: throttling risk, short signed-URL TTLs, and unproven range-request support. Supabase answers two outright — egress is priced rather than policed (§4.1), and TTL is a free variable (§4.2). The third, range requests, is now the single open gate at §4.4.
 
-Serving through Supabase's CDN drops egress from $0.09/GB to $0.03/GB (§4.1 Consequence 3). That is a real saving and a P8 concern, not a P1 one. **Ship without a cache tier. Add it when the bill says to.**
+Serving through Supabase's CDN drops egress from $0.09/GB to $0.03/GB (§4.1 Consequence 3). That is
+a real saving and a P8 concern, not a P1 one. **Ship without a cache tier. Add it when the bill says
+to.**
+
+> **Decision at P8 (2026-08-29): not enabled.** The trigger is the bill, and there is no bill yet —
+> zero subscribers means zero egress. Enabling a cache tier now would add a moving part with no
+> measurable benefit. **Revisit when monthly egress passes ~150 GB** (roughly 250 active listeners
+> at the §4.1 arithmetic), which is the point where the $0.06/GB difference starts to exceed the
+> cost of maintaining it.
 
 ### 7.5 Who counts as an admin
 
@@ -591,14 +614,34 @@ Four rules:
 8. **`invoice.*` events never invent a status.** They may move `active` → `past_due`, but the
    authoritative status always comes from the `customer.subscription.*` events.
 
-### 9.4 Entitlement
+### 9.4 Entitlement — three plans, not two
+
+Live prices (created 2026-08-29):
+
+| Plan | Price | Stripe mode | Grants |
+|---|---|---|---|
+| **Starter Bundle** | **$197 one-time** | `payment` | 10 slots, each spent on one study, kept permanently |
+| **Unlimited** | **$297 / year** | `subscription` | The whole library while active |
+| Founder discount | `FOUNDER-50` | 50% off first payment | Applies to either |
 
 ```ts
-// server-only, the single source of truth
-async function getEntitlement(userId: string): Promise<'free' | 'subscriber'>
+type Plan = 'free' | 'bundle' | 'full'
+async function getEntitlement(userId): Promise<{ plan; slots; claimed; remaining }>
+async function canAccessItem(userId, item): Promise<AccessDecision>
 ```
 
-Returns `subscriber` when a row exists with status `active` or `trialing` and `current_period_end` in the future. Called by every gated route and gated Server Component. `past_due` keeps access through the grace window; `canceled` retains access until `current_period_end`, because the user paid for the period.
+**The unit of purchase is a STUDY, not a file.** "10 PDF + corresponding MP3" means a PDF and its
+matching MP3 together consume one slot. Items belonging to one study share a `pair_key`; an item
+without one stands alone. This is why access can no longer be answered from the user alone —
+`canAccessItem` needs the item in hand, and every gated route passes it.
+
+**Slots are not access.** Buying the bundle grants ten slots; the reader then chooses which studies
+to spend them on via `/api/entitlements/claim`. A slot is spent permanently, so the UI confirms
+first. The unique index on `(user_id, unit_key)` is what makes a double-click harmless.
+
+Subscription semantics are unchanged: `past_due` keeps access through the grace window, and
+`canceled` retains access until `current_period_end`, because the user paid for the period. An
+active subscription beats bundle ownership and makes claiming unnecessary.
 
 ---
 
@@ -700,11 +743,11 @@ Notes: the persistent player docks at the bottom across every route. Dark mode i
 | **P1** ✅ | Upload + download, both formats | **DONE 2026-08-29.** 16/16 storage + validation checks and 13/13 HTTP gate checks green against the live project: magic-byte validation rejects forged files, oversize refused pre-ticket, admin gate returns 401/403/200 correctly, serving gate returns 401 → 404 (draft) → 402 (unentitled) → 200 + signed URL in that order, PDF TTL 5 min |
 | **P2** ✅ | Reader | **DONE 2026-08-29.** 18/18 automated checks plus browser verification: 8 pages render with live text layers (24 selectable spans), scroll tracking updates the page counter, position persists on a 3s debounce, and the resume prompt returns the reader to the saved page |
 | **P3** ✅ | Bookmarks + journals (reading) | **DONE 2026-08-29.** 13/13 anchor-recovery checks, 20/20 API checks, plus browser proof: a highlight stored on page 8 was re-found on page 9 after the PDF was re-uploaded with a page inserted, and the panel showed "Page 9 · position approximate" |
-| **P4** ⚠️ | Stripe | **Webhooks DONE 2026-08-29** — 24/24 signed-payload checks and 13/13 account-UI checks: subscribe, payment failure, cancel-at-period-end, lapse, replay, out-of-order, and reverse-order convergence all produce correct entitlement. **Checkout + Portal built but unverified** — guard paths pass 6/6 (401/400/503/404, no Stripe call reached), but the happy path needs `sk_test_` keys and two price ids |
+| **P4** ⚠️ | Stripe + bundle | **Webhooks DONE 2026-08-29** — 24/24 signed-payload checks and 13/13 account-UI checks: subscribe, payment failure, cancel-at-period-end, lapse, replay, out-of-order, and reverse-order convergence all produce correct entitlement. **Checkout + Portal built but unverified** — guard paths pass 6/6, but the happy path needs `sk_test_` keys. Live prices and the `FOUNDER-50` code were created 2026-08-29. **One-time bundle entitlement DONE** — 22/22 checks: `mode: 'payment'` grants 10 slots, a PDF and its MP3 cost one slot between them, replayed sessions do not double-grant, and a 3-year-old purchase still opens its study |
 | **P5** ✅ | Audio | **DONE 2026-08-29.** 24/24 automated checks plus browser proof: the *same DOM audio element* survived client-side navigation from `/listen` to `/library` still playing (position 104s → 108s), Chrome decoded the file at 179.6s, mid-file seeking works on 206 responses, Media Session metadata populated, speed and ±15s controls apply, and 108.99s / 60.7% persisted to the database |
 | **P6** ✅ | Bookmarks + journals (listening) | **DONE 2026-08-29.** 20/20 automated plus browser proof: pressing mark at 74s stored 1:09 (the 5-second lead-in), `useMarks`/`MarksPanel` now serve both halves from `src/app/marks/`, and `/notes` lists reading and listening marks together with Postgres full-text search |
 | **P7** ✅ | Reviews + moderation | **DONE 2026-08-29.** 16/16 moderation-rule checks and 24/24 API checks, plus browser proof: a published review reported by another reader returned to the queue and vanished from the public list, an admin republished it and the reports settled, and a banned author was refused |
-| **P8** | Hardening + cost | RLS suite green, rate limits, CSP, GDPR endpoints; CDN caching if the egress bill justifies it |
+| **P8** ✅ | Hardening + cost | **DONE 2026-08-29.** 19/19 RLS + 26/26 hardening checks. **The RLS suite found a real privilege-escalation hole** (see §5.2) and it is fixed. Rate limits are Postgres-backed, CSP ships with pdf.js and audio verified working under it, GDPR export and erasure both cascade clean. CDN caching deliberately NOT enabled — see §7.4 |
 
 P4 before P5 is deliberate: billing is the feature most likely to reveal a wrong assumption, and it is cheaper to learn that before the audio work than after.
 
@@ -766,6 +809,17 @@ auth exercised end to end against the live project). Everything from P1 onward i
    edited in one panel overwrite another's pending save.
 12. A shared `/g` regex carries `lastIndex` between `.test()` calls, so results depend on call
     order. Build matcher regexes fresh per invocation.
+14. Rate limiting must live in the database, not in memory. Serverless runs many instances, so an
+    in-process counter limits one instance and nothing else.
+16. Stripe webhook signature verification is a **local HMAC** using the `whsec_` secret. It makes no
+    API call, so it must not sit behind the live-key guard — doing so broke webhook processing in
+    development for no security gain. Guard outbound calls, not local crypto.
+17. Stripe promotion codes accept only letters, digits, and dashes. `FOUNDER.50` is not a legal
+    code; it was created as `FOUNDER-50`.
+18. A test suite that asserts absolute counts against shared demo content fails the moment anyone
+    uses the demo by hand. Suites create their own fixtures.
+15. `worker-src blob:` is mandatory in the CSP or pdf.js silently renders nothing — its parser runs
+    in a worker created from a blob URL, and the failure is invisible rather than loud.
 13. Publishing a reported review must **delete its outstanding reports**, or the next queue pass
     re-surfaces a review an admin already cleared.
 11. A listening mark records the position **minus a five-second lead-in**, clamped at zero. You

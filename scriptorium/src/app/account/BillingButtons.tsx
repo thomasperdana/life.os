@@ -2,8 +2,8 @@
 import { useState } from 'react'
 
 export function BillingButtons({
-  hasCustomer, entitlement,
-}: { hasCustomer: boolean; entitlement: 'free' | 'subscriber' }) {
+  hasCustomer, plan,
+}: { hasCustomer: boolean; plan: 'free' | 'bundle' | 'full' }) {
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -24,18 +24,18 @@ export function BillingButtons({
 
   return (
     <section className="space-y-3">
-      {entitlement === 'free' ? (
+      {plan !== 'full' && (
         <div className="flex flex-wrap gap-3">
-          <button disabled={!!busy} onClick={() => go('/api/stripe/checkout', { plan: 'monthly' })}
-            className="rounded-md bg-foreground text-background px-4 py-2 text-sm font-medium disabled:opacity-50">
-            {busy ? 'Opening…' : 'Subscribe monthly'}
-          </button>
-          <button disabled={!!busy} onClick={() => go('/api/stripe/checkout', { plan: 'annual' })}
+          <button disabled={!!busy} onClick={() => go('/api/stripe/checkout', { plan: 'starter' })}
             className="rounded-md border border-black/20 dark:border-white/25 px-4 py-2 text-sm font-medium disabled:opacity-50">
-            Subscribe annually
+            {busy ? 'Opening…' : 'Starter bundle · $197 once'}
+          </button>
+          <button disabled={!!busy} onClick={() => go('/api/stripe/checkout', { plan: 'unlimited' })}
+            className="rounded-md bg-foreground text-background px-4 py-2 text-sm font-medium disabled:opacity-50">
+            Unlimited · $297/year
           </button>
         </div>
-      ) : null}
+      )}
 
       {hasCustomer && (
         <button disabled={!!busy} onClick={() => go('/api/stripe/portal')}

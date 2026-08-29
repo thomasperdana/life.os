@@ -28,7 +28,13 @@ const J = (c: string) => ({ 'Content-Type': 'application/json', cookie: c })
 
 let itemId = ''
 try {
-  const [item] = await sql`select id from public.content_items where slug='demo-listen'`
+  // A dedicated item. Asserting absolute review counts against the shared demo
+  // content makes this suite fail whenever anyone reviews the demo by hand.
+  const slug = `p7-item-${Date.now()}`
+  const [item] = await sql`
+    insert into public.content_items (slug, kind, title, storage_path, duration_seconds, access_tier, status, published_at)
+    values (${slug}, 'audio', 'P7 Review Fixture', 'audio/demo-listen.mp3', 60, 'free', 'published', now())
+    returning id`
   itemId = item.id as string
 
   const reader = await mkUser('reader')
@@ -133,6 +139,12 @@ try {
 } catch (e) {
   console.error('\nERROR:', (e as Error).message); process.exitCode = 1
 } finally {
+  if (itemId) {
+    await sql`delete from public.review_reports where review_id in (select id from public.reviews where item_id=${itemId}::uuid)`
+    await sql`delete from public.reviews where item_id=${itemId}::uuid`
+    await sql`delete from public.progress where item_id=${itemId}::uuid`
+    await sql`delete from public.content_items where id=${itemId}::uuid`
+  }
   for (const id of users) {
     await sql`delete from public.review_reports where reporter_id=${id}::uuid`
     await sql`delete from public.reviews where user_id=${id}::uuid`

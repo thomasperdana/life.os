@@ -1,7 +1,7 @@
 import type Stripe from 'stripe'
 import { eq } from 'drizzle-orm'
-import { db, subscriptions, processedEvents } from '@/db'
-import { stripe, toSubStatus } from '@/lib/stripe'
+import { db, subscriptions, processedEvents, purchases } from '@/db'
+import { stripeWebhooks, toSubStatus, STARTER_SLOTS } from '@/lib/stripe'
 
 export const runtime = 'nodejs'
 
@@ -38,7 +38,7 @@ export async function POST(req: Request) {
 
   let event: Stripe.Event
   try {
-    event = stripe().webhooks.constructEvent(raw, signature, secret)
+    event = stripeWebhooks().constructEvent(raw, signature, secret)
   } catch (e) {
     return new Response(`signature verification failed: ${(e as Error).message}`, { status: 400 })
   }
@@ -67,8 +67,24 @@ async function apply(event: Stripe.Event) {
     case 'checkout.session.completed': {
       const s = event.data.object as Stripe.Checkout.Session
       const userId = s.client_reference_id ?? s.metadata?.userId
+      if (!userId) return
+
+      // A one-time bundle grants slots and creates NO subscription row.
+      if (s.mode === 'payment') {
+        if (s.payment_status !== 'paid') return
+        await db.insert(purchases).values({
+          userId,
+          stripeSessionId: s.id,
+          stripePaymentIntent: typeof s.payment_intent === 'string'
+            ? s.payment_intent : s.payment_intent?.id ?? null,
+          priceId: process.env.STRIPE_PRICE_STARTER ?? null,
+          slots: STARTER_SLOTS,
+        }).onConflictDoNothing()   // session id is unique: replays are no-ops
+        return
+      }
+
       const customerId = typeof s.customer === 'string' ? s.customer : s.customer?.id
-      if (!userId || !customerId) return
+      if (!customerId) return
       // Link the customer to the user. Subscription detail arrives separately,
       // and may arrive FIRST — which is why upsert, not insert.
       await upsert({ userId, customerId, event })

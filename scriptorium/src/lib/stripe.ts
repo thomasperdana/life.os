@@ -21,14 +21,37 @@ export function stripe(): Stripe {
   return cached
 }
 
+let webhookClient: Stripe | null = null
+
+/**
+ * Webhook signature verification ONLY.
+ *
+ * `constructEvent` is a local HMAC over the request body using the `whsec_`
+ * signing secret. It makes no API call and never transmits the secret key, so
+ * it must NOT sit behind the live-key policy — that guard exists to stop
+ * outbound calls against a production account from a dev machine, and applying
+ * it here breaks webhook processing in development for no security gain.
+ */
+export function stripeWebhooks() {
+  if (!webhookClient) {
+    webhookClient = new Stripe(process.env.STRIPE_SECRET_KEY ?? 'sk_unused_for_local_hmac')
+  }
+  return webhookClient.webhooks
+}
+
 export function stripeConfigured() {
   return Boolean(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_WEBHOOK_SECRET)
 }
 
 export const PRICES = {
-  get monthly() { return process.env.STRIPE_PRICE_MONTHLY },
-  get annual() { return process.env.STRIPE_PRICE_ANNUAL },
+  /** $197 one-time — 10 studies, kept permanently. */
+  get starter() { return process.env.STRIPE_PRICE_STARTER },
+  /** $297/year — the whole library. */
+  get unlimited() { return process.env.STRIPE_PRICE_UNLIMITED },
 }
+
+/** How many studies a one-time purchase grants. */
+export const STARTER_SLOTS = 10
 
 /** Stripe's subscription statuses, narrowed to the enum in our schema. */
 export type SubStatus =

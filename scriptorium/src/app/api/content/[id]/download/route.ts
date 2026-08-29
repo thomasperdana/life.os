@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
 import { db, downloadEvents } from '@/db'
 import { gateContent } from '@/lib/gate'
+import { rateLimit, limitResponse } from '@/lib/ratelimit'
+import { currentUserId } from '@/lib/session'
 import { createDownloadUrl, readWhole } from '@/lib/storage'
 import { watermarkPdf } from '@/lib/watermark'
 import type { ContentKind } from '@/lib/content-format'
@@ -18,6 +20,9 @@ const WATERMARK_PDFS = process.env.WATERMARK_PDFS !== 'false'
  */
 export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params
+  const limited = await rateLimit(`dl:${id}:${(await currentUserId()) ?? 'anon'}`, 20, 3600)
+  if (!limited.allowed) return limitResponse(limited)
+
   const gate = await gateContent(id)
   if (!gate.ok) return Response.json({ error: gate.status }, { status: gate.status })
 

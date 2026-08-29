@@ -28,8 +28,19 @@ export default async function AccountPage() {
       <section className="rounded-lg border border-black/10 dark:border-white/15 p-5 space-y-3">
         <p className="text-sm text-black/60 dark:text-white/60">{user.email}</p>
         <p className="text-lg font-medium">
-          {entitlement === 'subscriber' ? 'Subscriber' : 'Free account'}
+          {entitlement.plan === 'full' ? 'Unlimited'
+            : entitlement.plan === 'bundle' ? 'Starter bundle'
+            : 'Free account'}
         </p>
+
+        {entitlement.plan === 'bundle' && (
+          <p className="text-sm text-black/60 dark:text-white/60" data-testid="slot-count">
+            {entitlement.claimed} of {entitlement.slots} studies unlocked
+            {entitlement.remaining > 0
+              ? ` · ${entitlement.remaining} left to choose`
+              : ' · all slots used'}
+          </p>
+        )}
 
         {sub && (
           <dl className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm pt-2 border-t border-black/5 dark:border-white/10">
@@ -54,7 +65,7 @@ export default async function AccountPage() {
       </section>
 
       {stripeConfigured() ? (
-        <BillingButtons hasCustomer={Boolean(sub?.stripeCustomerId)} entitlement={entitlement} />
+        <BillingButtons hasCustomer={Boolean(sub?.stripeCustomerId)} plan={entitlement.plan} />
       ) : (
         <p className="text-sm text-black/50 dark:text-white/50">
           Billing is not configured on this deployment.

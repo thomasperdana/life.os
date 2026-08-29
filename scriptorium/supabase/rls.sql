@@ -42,8 +42,15 @@ alter table public.processed_events enable row level security;
 -- ── profiles: read and update your own ───────────────────────────────────────
 create policy "profiles: read own"   on public.profiles
   for select using ((select auth.uid()) = id);
+-- Column-level grants, not just a policy: RLS cannot restrict WHICH columns an
+-- update touches, and without this a user can set their own role='admin'.
+revoke update on public.profiles from authenticated, anon;
+grant  update (display_name, avatar_url) on public.profiles to authenticated;
+
 create policy "profiles: update own" on public.profiles
-  for update using ((select auth.uid()) = id);
+  for update
+  using      ((select auth.uid()) = id)
+  with check ((select auth.uid()) = id);
 
 -- ── content_items: anyone signed in may see PUBLISHED metadata ───────────────
 -- Metadata is not the file. The bytes are gated by signed URLs (§7.3).

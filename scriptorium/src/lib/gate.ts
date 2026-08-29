@@ -2,7 +2,7 @@ import 'server-only'
 import { eq } from 'drizzle-orm'
 import { db, contentItems } from '@/db'
 import { createClient } from '@/lib/supabase/server'
-import { getEntitlement, canAccess } from '@/lib/entitlement'
+import { canAccessItem } from '@/lib/entitlement'
 
 type Gate =
   | { ok: true; userId: string; item: typeof contentItems.$inferSelect }
@@ -24,8 +24,8 @@ export async function gateContent(itemId: string): Promise<Gate> {
 
   if (!item || item.status !== 'published') return { ok: false, status: 404 }
 
-  const entitlement = await getEntitlement(user.id)
-  if (!canAccess(entitlement, item.accessTier)) return { ok: false, status: 402 }
+  const decision = await canAccessItem(user.id, item)
+  if (!decision.allowed) return { ok: false, status: 402 }
 
   return { ok: true, userId: user.id, item }
 }

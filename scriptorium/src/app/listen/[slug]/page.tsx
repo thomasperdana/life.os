@@ -3,7 +3,7 @@ import { and, eq } from 'drizzle-orm'
 import Link from 'next/link'
 import { db, contentItems, progress } from '@/db'
 import { createClient } from '@/lib/supabase/server'
-import { getEntitlement, canAccess } from '@/lib/entitlement'
+import { canAccessItem } from '@/lib/entitlement'
 import { ListenClient } from './ListenClient'
 
 export const dynamic = 'force-dynamic'
@@ -25,13 +25,14 @@ export default async function ListenPage({
     .where(eq(contentItems.slug, slug)).limit(1)
   if (!item || item.status !== 'published' || item.kind !== 'audio') notFound()
 
-  const entitlement = await getEntitlement(user.id)
-  if (!canAccess(entitlement, item.accessTier)) {
+  const decision = await canAccessItem(user.id, item)
+  if (!decision.allowed) {
     return (
       <main className="mx-auto max-w-lg px-6 py-24 text-center space-y-4">
         <h1 className="text-xl font-semibold">Subscribers only</h1>
         <p className="text-sm text-black/60 dark:text-white/60">
           “{item.title}” is part of the subscriber library.
+          {decision.claimable && ' You have a bundle slot left — you can unlock it from the library.'}
         </p>
         <Link href="/account" className="inline-block rounded-md bg-foreground text-background px-4 py-2 text-sm font-medium">
           See subscription options
