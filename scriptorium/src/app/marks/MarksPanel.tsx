@@ -1,8 +1,14 @@
 'use client'
 import { useState } from 'react'
-import type { Bookmark, Journal } from './useMarks'
+import type { Bookmark, Journal, MarkKind } from './useMarks'
+
+export const fmtTime = (s: number) => {
+  const m = Math.floor(s / 60)
+  return `${m}:${String(Math.floor(s % 60)).padStart(2, '0')}`
+}
 
 type Props = {
+  kind: MarkKind
   bookmarks: Bookmark[]
   itemJournal: Journal | null
   journalFor: (bookmarkId: string | null) => Journal | null
@@ -14,8 +20,9 @@ type Props = {
 }
 
 export function MarksPanel({
-  bookmarks, itemJournal, journalFor, recovery, onGoTo, onRemove, onSaveJournal, onClose,
+  kind, bookmarks, itemJournal, journalFor, recovery, onGoTo, onRemove, onSaveJournal, onClose,
 }: Props) {
+  const isAudio = kind === 'listening'
   const [tab, setTab] = useState<'marks' | 'journal'>('marks')
   const [openNote, setOpenNote] = useState<string | null>(null)
 
@@ -38,25 +45,28 @@ export function MarksPanel({
         <div className="flex-1 overflow-auto p-3 space-y-2">
           {bookmarks.length === 0 && (
             <p className="text-sm text-black/50 dark:text-white/50 p-3">
-              Select text in the document to highlight it, or use the bookmark button to mark a page.
+              {isAudio
+                ? 'Press the mark button while listening to save the moment. It captures five seconds before you pressed it.'
+                : 'Select text in the document to highlight it, or use the bookmark button to mark a page.'}
             </p>
           )}
           {bookmarks.map((b) => {
             const rec = recovery.get(b.id)
             const note = journalFor(b.id)
-            const page = rec?.page ?? b.page ?? 1
+            // A reading mark points at a page; a listening mark at a second.
+            const target = isAudio ? (b.positionSeconds ?? 0) : (rec?.page ?? b.page ?? 1)
             return (
               <div key={b.id} className="rounded-lg border border-black/10 dark:border-white/15 p-3 space-y-2">
                 <div className="flex items-start gap-2">
-                  <button onClick={() => onGoTo(page)}
+                  <button onClick={() => onGoTo(target)}
                     className="flex-1 text-left space-y-1">
                     <span className="text-xs text-black/50 dark:text-white/50">
-                      Page {page}
-                      {rec?.approximate && (
+                      {isAudio ? fmtTime(target) : `Page ${target}`}
+                      {!isAudio && rec?.approximate && (
                         <span title="The document changed; this was relocated by matching its text."
                           className="ml-1.5 text-amber-700 dark:text-amber-400">· position approximate</span>
                       )}
-                      {rec === null && (
+                      {!isAudio && rec === null && (
                         <span className="ml-1.5 text-red-700 dark:text-red-400">· text not found</span>
                       )}
                     </span>
@@ -79,7 +89,7 @@ export function MarksPanel({
                   <textarea
                     defaultValue={note?.bodyMd ?? ''}
                     onChange={(e) => onSaveJournal(b.id, e.target.value)}
-                    placeholder="A thought, beside the sentence that caused it…"
+                    placeholder={isAudio ? "A thought, beside the moment that caused it…" : "A thought, beside the sentence that caused it…"}
                     rows={4}
                     className="w-full rounded border border-black/15 dark:border-white/20 bg-transparent p-2 text-sm"
                   />
@@ -94,7 +104,7 @@ export function MarksPanel({
       ) : (
         <div className="flex-1 overflow-auto p-3">
           <label htmlFor="item-journal" className="block text-xs text-black/50 dark:text-white/50 mb-2">
-            Your response to the whole document. Markdown, private, autosaved.
+            {isAudio ? 'Your response to the whole recording.' : 'Your response to the whole document.'} Markdown, private, autosaved.
           </label>
           <textarea
             id="item-journal"

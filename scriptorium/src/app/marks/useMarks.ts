@@ -2,9 +2,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TextAnchor } from '@/lib/anchor'
 
+export type MarkKind = 'reading' | 'listening'
+
 export type Bookmark = {
   id: string
+  kind: MarkKind
+  /** reading anchor */
   page: number | null
+  /** listening anchor */
+  positionSeconds: number | null
   textAnchor: TextAnchor | null
   label: string | null
   color: string | null
@@ -19,7 +25,7 @@ export type Journal = {
 
 const JOURNAL_DEBOUNCE_MS = 1200
 
-export function useMarks(itemId: string) {
+export function useMarks(itemId: string, kind: MarkKind = 'reading') {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
   const [journals, setJournals] = useState<Journal[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -37,14 +43,18 @@ export function useMarks(itemId: string) {
   useEffect(() => { void refresh() }, [refresh])
 
   const addBookmark = useCallback(async (input: {
-    page: number; textAnchor?: TextAnchor | null; label?: string; color?: string
+    page?: number
+    positionSeconds?: number
+    textAnchor?: TextAnchor | null
+    label?: string
+    color?: string
   }) => {
     const res = await fetch('/api/bookmarks', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ itemId, kind: 'reading', ...input }),
+      body: JSON.stringify({ itemId, kind, ...input }),
     })
     if (res.ok) { const { bookmark } = await res.json(); setBookmarks((p) => [bookmark, ...p]) }
-  }, [itemId])
+  }, [itemId, kind])
 
   const removeBookmark = useCallback(async (id: string) => {
     setBookmarks((p) => p.filter((b) => b.id !== id))
@@ -63,12 +73,12 @@ export function useMarks(itemId: string) {
     timers.current.set(key, setTimeout(async () => {
       await fetch('/api/journals', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ itemId, kind: 'reading', bookmarkId, bodyMd }),
+        body: JSON.stringify({ itemId, kind, bookmarkId, bodyMd }),
         keepalive: true,
       })
       void refresh()
     }, JOURNAL_DEBOUNCE_MS))
-  }, [itemId, refresh])
+  }, [itemId, kind, refresh])
 
   useEffect(() => {
     const t = timers.current

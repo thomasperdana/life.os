@@ -1,6 +1,6 @@
 # SPEC — Scriptorium: a PDF + Audio Library SaaS on Next.js, Supabase, and Vercel
 
-> **Status:** **P0–P4 built and verified** against a live Supabase project (2026-08-29); P5 onward specified, not built.
+> **Status:** **P0–P6 built and verified** against a live Supabase project (2026-08-29); P7 onward specified, not built.
 > Stripe's webhook handler is fully verified offline with real signatures; Checkout and the Customer Portal need live API keys and are **not** yet exercised.
 > Implementation: [`../scriptorium`](../scriptorium).  Working name **Scriptorium** (proposed).
 > **Written:** 2026-08-29 · **Spec version:** 3.2.0
@@ -512,8 +512,10 @@ bill (§4.1), so bitrate is a product decision, not an afterthought (§15 Q4).
 
 **Playback** is where the work is.
 
-- **One `<audio>` element**, mounted in the root layout, owned by React context. It survives
-  navigation, so the player does not restart when you browse elsewhere.
+- **One `<audio>` element**, mounted in the ROOT layout, owned by React context. This is the whole
+  design: a player mounted inside a route component is unmounted on navigation, which stops
+  playback. Root-mounting is what makes browsing while listening possible. Verified by tagging the
+  element and asserting the *same node* survives a client-side route change.
 - **Media Session API** for lock-screen art, title, and headphone controls.
 - Speed control (0.75×–2×), 15-second skip, sleep timer.
 - **Position saved every 10 s and on pause/unload** via `navigator.sendBeacon`, so closing the tab
@@ -532,7 +534,14 @@ Timestamp-anchored, same table, `kind='listening'`. Marking while playing captur
 
 ### 8.8 Listening journals — *your item 9*
 
-§8.4 exactly, anchored to a timestamp instead of a page. Shared component, shared table, shared search index.
+§8.4 exactly, anchored to a timestamp instead of a page. Shared component, shared table, shared
+search index — `useMarks` and `MarksPanel` live in `src/app/marks/` and take a `kind`, so the
+reading and listening halves cannot drift apart.
+
+**`/notes` is one query over both halves.** Bookmarks and journals are unioned, each carrying its
+own `tsvector`, and filtered with `websearch_to_tsquery` so quoted phrases and `-exclusions` behave
+the way anyone who has used a search box expects. Results link back to the exact anchor:
+`?page=N` for a PDF, `?t=seconds` for audio. Indexes in `supabase/search.sql`.
 
 ### 8.9 Reviews — *your item 6*
 
@@ -625,6 +634,11 @@ You will eventually receive a review you disagree with. The moderation queue exi
 
 ## 11. Security & Privacy
 
+- **Development uses Stripe TEST keys, never live.** `src/lib/stripe-key-policy.ts` refuses an
+  `sk_live_` key whenever `NODE_ENV !== 'production'`, overridable only by an explicit
+  `STRIPE_ALLOW_LIVE_KEY=1`. A live key on a dev machine creates real customers and real charges,
+  and the only reason one is ever there is that the wrong key got copied out of the dashboard.
+  Enforced in code because a convention in a README does not stop this.
 - **The service-role key is the crown jewel.** `SUPABASE_SERVICE_ROLE_KEY` bypasses every RLS policy. Server-only, never `NEXT_PUBLIC_`, never in a Client Component, never logged. If it leaks, every subscriber's journals leak with it. The anon key is public by design and safe in the browser; do not confuse them.
 - **Other server-only secrets:** `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `DATABASE_URL`. Set them as Vercel environment variables scoped to server runtime.
 - **Both fences up** (§5.2): entitlement in application code, RLS on every `public` table. Enable RLS at table creation, not later — an unprotected table is only discovered by accident.
@@ -681,9 +695,9 @@ Notes: the persistent player docks at the bottom across every route. Dark mode i
 | **P1** ✅ | Upload + download, both formats | **DONE 2026-08-29.** 16/16 storage + validation checks and 13/13 HTTP gate checks green against the live project: magic-byte validation rejects forged files, oversize refused pre-ticket, admin gate returns 401/403/200 correctly, serving gate returns 401 → 404 (draft) → 402 (unentitled) → 200 + signed URL in that order, PDF TTL 5 min |
 | **P2** ✅ | Reader | **DONE 2026-08-29.** 18/18 automated checks plus browser verification: 8 pages render with live text layers (24 selectable spans), scroll tracking updates the page counter, position persists on a 3s debounce, and the resume prompt returns the reader to the saved page |
 | **P3** ✅ | Bookmarks + journals (reading) | **DONE 2026-08-29.** 13/13 anchor-recovery checks, 20/20 API checks, plus browser proof: a highlight stored on page 8 was re-found on page 9 after the PDF was re-uploaded with a page inserted, and the panel showed "Page 9 · position approximate" |
-| **P4** ⚠️ | Stripe | **Webhooks DONE 2026-08-29** — 24/24 signed-payload checks and 13/13 account-UI checks: subscribe, payment failure, cancel-at-period-end, lapse, replay, out-of-order, and reverse-order convergence all produce correct entitlement. **Checkout + Portal built but unverified** — they require live Stripe keys |
-| **P5** | Audio | **Range-request gate (§4.4) confirmed first.** Player survives navigation, position persists, Media Session controls work |
-| **P6** | Bookmarks + journals (listening) | Shared components carry both halves; `/notes` searches across everything |
+| **P4** ⚠️ | Stripe | **Webhooks DONE 2026-08-29** — 24/24 signed-payload checks and 13/13 account-UI checks: subscribe, payment failure, cancel-at-period-end, lapse, replay, out-of-order, and reverse-order convergence all produce correct entitlement. **Checkout + Portal built but unverified** — guard paths pass 6/6 (401/400/503/404, no Stripe call reached), but the happy path needs `sk_test_` keys and two price ids |
+| **P5** ✅ | Audio | **DONE 2026-08-29.** 24/24 automated checks plus browser proof: the *same DOM audio element* survived client-side navigation from `/listen` to `/library` still playing (position 104s → 108s), Chrome decoded the file at 179.6s, mid-file seeking works on 206 responses, Media Session metadata populated, speed and ±15s controls apply, and 108.99s / 60.7% persisted to the database |
+| **P6** ✅ | Bookmarks + journals (listening) | **DONE 2026-08-29.** 20/20 automated plus browser proof: pressing mark at 74s stored 1:09 (the 5-second lead-in), `useMarks`/`MarksPanel` now serve both halves from `src/app/marks/`, and `/notes` lists reading and listening marks together with Postgres full-text search |
 | **P7** | Reviews + moderation | Queue works; report flow returns a published review to it |
 | **P8** | Hardening + cost | RLS suite green, rate limits, CSP, GDPR endpoints; CDN caching if the egress bill justifies it |
 
@@ -745,5 +759,11 @@ auth exercised end to end against the live project). Everything from P1 onward i
    worth more than the anchor it hung on.
 9. Autosave needs one debounce timer **per journal target**. A single shared timer lets a note being
    edited in one panel overwrite another's pending save.
+11. A listening mark records the position **minus a five-second lead-in**, clamped at zero. You
+    always realise a passage mattered slightly after it started, so storing the raw press position
+    reliably loses the sentence the listener wanted.
+10. There is no MP3 encoder on this machine (no ffmpeg, no sox; `afconvert` decodes MP3 but will not
+    encode it). Audio fixtures are generated directly as MPEG-1 Layer III frames by
+    `src/lib/mp3-fixture.ts` — Chrome decodes them, and `music-metadata` reports the exact duration.
 10. Under Bun, Stripe's `generateTestHeaderString` throws — SubtleCrypto has no synchronous path.
     Use `generateTestHeaderStringAsync`. This affects tests only, not the handler.

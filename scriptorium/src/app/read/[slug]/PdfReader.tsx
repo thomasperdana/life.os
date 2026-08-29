@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { Document, Page, pdfjs } from 'react-pdf'
-import { useMarks } from './useMarks'
-import { MarksPanel } from './MarksPanel'
+import { useMarks } from '@/app/marks/useMarks'
+import { MarksPanel } from '@/app/marks/MarksPanel'
 import { recoverAnchor, type TextAnchor } from '@/lib/anchor'
 import 'react-pdf/dist/Page/TextLayer.css'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
@@ -27,7 +27,7 @@ type Props = {
 export function PdfReader({
   itemId, title, fileUrl, urlExpiresAt, totalPages, initialPage, checksum,
 }: Props) {
-  const marks = useMarks(itemId)
+  const marks = useMarks(itemId, 'reading')
   const [panelOpen, setPanelOpen] = useState(false)
   const [pendingSel, setPendingSel] = useState<{ page: number; text: string } | null>(null)
   const [pagesText, setPagesText] = useState<string[]>([])
@@ -336,6 +336,7 @@ export function PdfReader({
 
       {panelOpen && (
         <MarksPanel
+          kind="reading"
           bookmarks={marks.bookmarks}
           itemJournal={marks.journalFor(null)}
           journalFor={marks.journalFor}
