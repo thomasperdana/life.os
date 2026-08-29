@@ -36,6 +36,8 @@ export const profiles = pgTable('profiles', {
   displayName: text('display_name'),
   avatarUrl: text('avatar_url'),
   role: userRole('role').notNull().default('member'),
+  /** Set by an admin (§10.2). A banned author cannot submit reviews. */
+  bannedAt: timestamp('banned_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 })
 
@@ -163,6 +165,15 @@ export const reviews = pgTable('reviews', {
   uniqueIndex('reviews_one_per_user_item').on(t.userId, t.itemId),
   check('review_rating_range', sql`${t.rating} BETWEEN 1 AND 5`),
 ])
+
+/** A published review returns to the queue when someone reports it (§10.2). */
+export const reviewReports = pgTable('review_reports', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  reviewId: uuid('review_id').notNull().references(() => reviews.id, { onDelete: 'cascade' }),
+  reporterId: uuid('reporter_id').notNull().references(() => profiles.id, { onDelete: 'cascade' }),
+  reason: text('reason'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex('review_reports_one_per_reporter').on(t.reviewId, t.reporterId)])
 
 // ─── Abuse signal (§11) ───────────────────────────────────────────────────
 

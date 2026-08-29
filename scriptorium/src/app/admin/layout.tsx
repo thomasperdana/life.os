@@ -18,6 +18,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
       <nav className="flex gap-6 text-sm border-b border-black/10 dark:border-white/15 pb-3">
         <Link href="/admin/content" className="font-medium">Content</Link>
         <Link href="/admin/content/new">Upload</Link>
+        <Link href="/admin/reviews">Moderation</Link>
         <Link href="/library" className="ml-auto text-black/50 dark:text-white/50">Library</Link>
       </nav>
       {children}

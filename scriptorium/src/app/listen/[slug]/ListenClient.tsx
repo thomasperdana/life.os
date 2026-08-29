@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { usePlayer } from '@/app/player/PlayerProvider'
 import { useMarks } from '@/app/marks/useMarks'
 import { MarksPanel } from '@/app/marks/MarksPanel'
+import { Reviews } from '@/app/reviews/Reviews'
 
 /**
  * You always realise a passage mattered slightly AFTER it started, so a mark
@@ -20,6 +21,7 @@ export function ListenClient(props: {
   itemId: string; slug: string; title: string; series: string | null
   durationSeconds: number | null; startAt?: number
   savedPosition: number | null; savedPercent: number | null
+  hasProgress: boolean
 }) {
   const player = usePlayer()
   const loaded = useRef(false)
@@ -106,6 +108,8 @@ export function ListenClient(props: {
           onClose={() => setPanelOpen(false)}
         />
       )}
+
+      <Reviews itemId={props.itemId} canReview={props.hasProgress} />
 
       <p className="text-sm text-black/60 dark:text-white/60" data-testid="listen-state">
         {isCurrent

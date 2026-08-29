@@ -1,6 +1,6 @@
 # SPEC — Scriptorium: a PDF + Audio Library SaaS on Next.js, Supabase, and Vercel
 
-> **Status:** **P0–P6 built and verified** against a live Supabase project (2026-08-29); P7 onward specified, not built.
+> **Status:** **P0–P7 built and verified** against a live Supabase project (2026-08-29); P8 remains.
 > Stripe's webhook handler is fully verified offline with real signatures; Checkout and the Customer Portal need live API keys and are **not** yet exercised.
 > Implementation: [`../scriptorium`](../scriptorium).  Working name **Scriptorium** (proposed).
 > **Written:** 2026-08-29 · **Spec version:** 3.2.0
@@ -617,7 +617,10 @@ Item pages show the aggregate, the distribution, and published reviews newest-fi
 Reviews are public user content, so they need a pipeline, not good intentions:
 
 1. Submit → `status='pending'`.
-2. Automated pass: profanity list, link and contact-detail stripping, a length floor.
+2. Automated pass (`src/lib/moderation.ts`, pure and unit-tested): email addresses, links, and
+   phone numbers are stripped and flagged; abusive language is flagged; a length floor and ceiling
+   apply. **Email is matched before URLs** — an address contains a domain, so the URL rule would
+   otherwise swallow `someone@example.com` as a link and the email rule would never fire.
 3. Clean reviews auto-publish; flagged ones queue for you.
 4. Admin queue: publish, reject with reason, or ban the author.
 5. Any user can report a published review, which returns it to the queue.
@@ -625,6 +628,8 @@ Reviews are public user content, so they need a pipeline, not good intentions:
 RLS policy: a user may read published reviews and their own pending one, and may write only their own. Admin actions run service-role.
 
 Rate limit: one submission per user per item per hour, to make abuse tedious.
+
+**Assumption A1 was confirmed by the principal on 2026-08-29.** This section is built.
 
 ### 10.3 Author's note
 
@@ -698,7 +703,7 @@ Notes: the persistent player docks at the bottom across every route. Dark mode i
 | **P4** ⚠️ | Stripe | **Webhooks DONE 2026-08-29** — 24/24 signed-payload checks and 13/13 account-UI checks: subscribe, payment failure, cancel-at-period-end, lapse, replay, out-of-order, and reverse-order convergence all produce correct entitlement. **Checkout + Portal built but unverified** — guard paths pass 6/6 (401/400/503/404, no Stripe call reached), but the happy path needs `sk_test_` keys and two price ids |
 | **P5** ✅ | Audio | **DONE 2026-08-29.** 24/24 automated checks plus browser proof: the *same DOM audio element* survived client-side navigation from `/listen` to `/library` still playing (position 104s → 108s), Chrome decoded the file at 179.6s, mid-file seeking works on 206 responses, Media Session metadata populated, speed and ±15s controls apply, and 108.99s / 60.7% persisted to the database |
 | **P6** ✅ | Bookmarks + journals (listening) | **DONE 2026-08-29.** 20/20 automated plus browser proof: pressing mark at 74s stored 1:09 (the 5-second lead-in), `useMarks`/`MarksPanel` now serve both halves from `src/app/marks/`, and `/notes` lists reading and listening marks together with Postgres full-text search |
-| **P7** | Reviews + moderation | Queue works; report flow returns a published review to it |
+| **P7** ✅ | Reviews + moderation | **DONE 2026-08-29.** 16/16 moderation-rule checks and 24/24 API checks, plus browser proof: a published review reported by another reader returned to the queue and vanished from the public list, an admin republished it and the reports settled, and a banned author was refused |
 | **P8** | Hardening + cost | RLS suite green, rate limits, CSP, GDPR endpoints; CDN caching if the egress bill justifies it |
 
 P4 before P5 is deliberate: billing is the feature most likely to reveal a wrong assumption, and it is cheaper to learn that before the audio work than after.
@@ -759,6 +764,10 @@ auth exercised end to end against the live project). Everything from P1 onward i
    worth more than the anchor it hung on.
 9. Autosave needs one debounce timer **per journal target**. A single shared timer lets a note being
    edited in one panel overwrite another's pending save.
+12. A shared `/g` regex carries `lastIndex` between `.test()` calls, so results depend on call
+    order. Build matcher regexes fresh per invocation.
+13. Publishing a reported review must **delete its outstanding reports**, or the next queue pass
+    re-surfaces a review an admin already cleared.
 11. A listening mark records the position **minus a five-second lead-in**, clamped at zero. You
     always realise a passage mattered slightly after it started, so storing the raw press position
     reliably loses the sentence the listener wanted.

@@ -59,6 +59,7 @@ export default async function ListenPage({
       startAt={startAt}
       savedPosition={offerResume ? saved!.positionSeconds! : null}
       savedPercent={saved?.percent ?? null}
+      hasProgress={Boolean(saved)}
     />
   )
 }
