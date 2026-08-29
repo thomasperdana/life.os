@@ -1,0 +1,491 @@
+# SPEC — Scriptorium: a PDF + Audio Library SaaS on Next.js
+
+> **Status:** specification, not built.  Working name **Scriptorium** (proposed).
+> **Written:** 2026-08-29 · **Spec version:** 3.0.0
+> **Repo:** `/Volumes/181TB/Developers-LLC/life.os` · **Siblings:** [SPEC.1.md](SPEC.1.md), [SPEC.2.md](SPEC.2.md) (the iOS Bible-study app; different product, same house style)
+
+---
+
+## 0. Three Assumptions, Stated Up Front
+
+You asked for nine features and did not have time for my clarifying questions, so I made three calls. Each is cheap to reverse; each is flagged where it bites.
+
+| # | Ambiguity | Call made | Reverse it by |
+|---|---|---|---|
+| **A1** | "allow user to have review" | **User-written reviews and 1–5 star ratings on each content item**, publicly visible, with a moderation queue (§10) | If you meant a personal re-reading/revision surface over your own bookmarks, delete §10 and fold it into §8.4; if you meant a rating prompt, delete §10 entirely |
+| **A2** | Who may read the content | **Content is subscriber-gated.** This is what forces the private-repo + server-signer design (§7) | If content is free and the subscription buys something else, §7 collapses to public URLs and gets much simpler |
+| **A3** | "download PDF from github" | **Both readings served**: the system syncs from GitHub, *and* subscribers may download the file locally (§8.1) | If subscribers must never hold the file, drop the download route and keep streaming only |
+
+---
+
+## 1. Context & Problem
+
+You have a library of written and spoken material and no good way to deliver it. GitHub already holds it, which solves storage and versioning and solves nothing else: there is no reading experience, no way to remember where you stopped, no way to keep a thought next to the paragraph that caused it, and no way to charge for any of it.
+
+This spec describes the delivery layer. A subscriber signs in, reads a PDF in the browser, listens to an MP3 with their place kept, marks passages, writes against them, and reviews what they finished. GitHub stays the source of record. Nothing about the authoring workflow changes.
+
+**The pivot that shapes everything below:** this is a web SaaS, not an iOS app. That single decision deletes Apple's Guideline 3.1.1, the 15–30% commission, the reader-app carve-out, and App Review. Stripe becomes ordinary. It is by a wide margin the cheapest version of this product to ship.
+
+---
+
+## 2. Product Definition
+
+**One sentence:** a subscription library where your PDFs and audio from GitHub become a real reading and listening experience, with bookmarks, journals, and reviews kept per user.
+
+### 2.1 The two symmetric halves
+
+The feature list is two parallel columns, and the schema should say so out loud:
+
+| Reading | Listening |
+|---|---|
+| PDF rendered in-browser (§8.2) | MP3 played in a persistent player (§8.6) |
+| Reading bookmarks — page anchored (§8.3) | Listening bookmarks — timestamp anchored (§8.7) |
+| Reading journals (§8.4) | Listening journals (§8.8) |
+| Progress: furthest page, percent | Progress: position in seconds, percent |
+
+One `kind` discriminator (`reading` | `listening`) runs through `bookmarks`, `journals`, and `progress` rather than six near-identical tables. Anchors differ; everything else is the same shape.
+
+### 2.2 Personas
+
+- **Subscriber** — reads, listens, marks, writes, reviews.
+- **Free visitor** — browses the catalog and previews; cannot open gated content.
+- **Admin (you)** — publishes to GitHub, triggers catalog sync, moderates reviews.
+
+---
+
+## 3. Non-Goals
+
+- **No native mobile app.** Responsive web, installable as a PWA. A native client is a later decision, not a v1 scope item.
+- **No authoring in-app.** Content is written and published elsewhere; GitHub is the ingest boundary.
+- **No DRM.** Watermarking is offered (§8.1); genuine DRM is not attempted, because it does not work and it degrades the honest reader's experience.
+- **No social graph.** Reviews are the only public user content. No following, no comments, no messaging.
+- **No multi-tenancy.** One library, one publisher (you), many subscribers.
+- **No video** in v1.
+
+---
+
+## 4. Verified Constraints
+
+Checked 2026-08-29. Sources in §16.
+
+### 4.1 GitHub reserves the right to throttle you for bandwidth
+
+GitHub's Acceptable Use Policies: *"If we determine your bandwidth usage to be significantly excessive in relation to other users of similar features, we reserve the right to suspend your Account, throttle your file hosting, or otherwise limit your activity,"* and GitHub may *"delete repositories that we determine to be placing undue strain on our infrastructure"* after notice.
+
+The policy does not ban CDN-style use outright. It reserves discretion, which is worse, because you cannot design against discretion.
+
+> **Consequence.** GitHub is the **source of record**, never the delivery path at scale. MP3 libraries are exactly the workload that trips this: a 60 MB file times a thousand listens is 60 GB from one repo. §7.4 specifies a cache-on-first-read layer in front of it. v1 may serve signed GitHub URLs directly while the audience is small, but the cache layer is designed in from the start, not retrofitted after a suspension email.
+
+### 4.2 Apple's payment rules do not apply here
+
+Guideline 3.1.1 requires In-App Purchase to unlock content *within an app*. A website is not an app.
+
+> **Consequence.** Stripe handles subscriptions directly, at Stripe's rates, with no platform commission and no App Review. If a native iOS client is ever built, this constraint returns in force and the reader-app carve-out (3.1.3(a)) becomes the path — PDFs and audio fit its "books, audio" category precisely. Noted now so the entitlement model in §9 stays portable to that future.
+
+### 4.3 Gates on claims not verified this session
+
+Design contracts asserted below that must be confirmed against live behavior before being relied on:
+
+- ☐ GitHub `GET /repos/{owner}/{repo}/releases/assets/{id}` with `Accept: application/octet-stream` returns **302 to a short-lived signed URL** (§7.3), and that URL honors **HTTP range requests** (required for audio seeking).
+- ☐ Release-asset downloads are **not** billed against Git LFS bandwidth quotas.
+- ☐ Current GitHub per-file size ceiling for release assets, and the practical repo size at which "undue strain" is triggered.
+- ☐ Signed-URL TTL, measured, not assumed (drives the refresh strategy in §7.4).
+
+---
+
+## 5. Architecture
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│  Browser — Next.js App Router, React Server Components         │
+│  PDF viewer (pdf.js) · persistent audio player · PWA shell     │
+├───────────────────────────────────────────────────────────────┤
+│  Next.js Route Handlers (Node runtime)                         │
+│  /api/content/[id]/url   · signed-URL minting, entitlement     │
+│  /api/stripe/webhook     · raw-body signature verification     │
+│  /api/bookmarks /journals /reviews /progress                   │
+├───────────────────────────────────────────────────────────────┤
+│  Server modules                                                │
+│  entitlement.ts · catalog-sync.ts · github-signer.ts           │
+│  stripe.ts · moderation.ts                                     │
+├──────────────────┬───────────────────┬────────────────────────┤
+│  Postgres        │  Object cache     │  Stripe                │
+│  (Drizzle ORM)   │  (R2 / Blob)      │  (billing of record)   │
+└──────────────────┴─────────┬─────────┴────────────────────────┘
+                             │ cache miss
+                   ┌─────────▼─────────┐
+                   │  GitHub (private) │  source of record
+                   │  Releases + assets│
+                   └───────────────────┘
+```
+
+**Node worker (optional, v2):** one small Node process for scheduled catalog sync and cache warming. Not needed in v1 — a Next.js route triggered by cron covers it.
+
+### 5.1 Stack
+
+| Choice | Value | Why |
+|---|---|---|
+| Framework | **Next.js 15+, App Router**, TypeScript strict | Server Components keep entitlement checks on the server by default |
+| Runtime | **Node.js** for every route touching secrets | Stripe SDK and GitHub tokens require it; Edge runtime cannot hold them safely |
+| Package manager | **bun** | Standing rule; Node remains the deploy runtime |
+| Database | **Postgres** | Relational data with real constraints; this schema is relational |
+| ORM | **Drizzle** | SQL-first, honest generated types, cheap migrations |
+| Auth | **Auth.js v5** with Postgres adapter | Free, self-hosted, no per-seat cost. Alternates: Clerk (buys weeks, costs per user), Better Auth (Stripe plugin) |
+| Payments | **Stripe** — Checkout + Customer Portal + webhooks | Never hand-roll billing UI |
+| PDF | **pdf.js** via `react-pdf`, text layer on | Text layer is required for selection-anchored bookmarks (§8.3) |
+| Audio | Native `<audio>` + **Media Session API** | Lock-screen and headphone controls for free |
+| Object cache | **Cloudflare R2** (or Vercel Blob) | Zero egress fees on R2; the §4.1 mitigation |
+| Editor | **Tiptap** or plain Markdown | Journals are prose, not documents |
+| Hosting | Vercel + Neon + R2 | Self-host on one VPS with Docker is a supported alternative |
+
+### 5.2 The one rule that keeps this secure
+
+**Entitlement is decided on the server, every time, from the database.** Never from a client claim, never from a cookie flag, never from a Stripe object fetched client-side. One function, `getEntitlement(userId)`, reads the `subscriptions` table that webhooks keep current (§9.3). Every gated route calls it. There is no second path.
+
+---
+
+## 6. Data Model
+
+```sql
+-- Auth.js owns: users, accounts, sessions, verification_tokens
+
+subscriptions (
+  user_id, stripe_customer_id, stripe_subscription_id,
+  status,                      -- active|trialing|past_due|canceled|incomplete
+  price_id, current_period_end, cancel_at_period_end,
+  updated_at                   -- webhook-written only
+)
+
+content_items (
+  id, slug, kind,              -- 'pdf' | 'audio'
+  title, description, cover_url, series, sort_order,
+  github_release_tag, github_asset_id, byte_size, checksum,
+  page_count,                  -- pdf only
+  duration_seconds,            -- audio only
+  access_tier,                 -- 'free' | 'subscriber'
+  published_at, synced_at
+)
+
+progress (
+  user_id, item_id, kind,      -- 'reading' | 'listening'
+  page, position_seconds, percent, updated_at,
+  PRIMARY KEY (user_id, item_id)
+)
+
+bookmarks (
+  id, user_id, item_id, kind,
+  page, position_seconds,      -- one is null, per kind
+  text_anchor,                 -- jsonb: quads + quoted text, pdf only
+  label, color, created_at
+)
+
+journals (
+  id, user_id, item_id, bookmark_id,   -- nullable: free-standing or anchored
+  kind, body_md, created_at, updated_at
+)
+
+reviews (
+  id, user_id, item_id, rating,        -- 1..5
+  body, status,                        -- 'pending'|'published'|'rejected'
+  moderated_by, moderated_at, created_at,
+  UNIQUE (user_id, item_id)
+)
+
+download_events (
+  id, user_id, item_id, ip_hash, user_agent, created_at
+)
+```
+
+**Why one `bookmarks` table and not two.** Reading and listening bookmarks differ in exactly one column — the anchor. Every query you actually write ("this user's bookmarks, newest first", "this item's bookmarks with their journals") wants them together. Two tables means every such query is a `UNION`. The `kind` discriminator plus a check constraint (`kind='reading'` requires `page`, `kind='listening'` requires `position_seconds`) keeps it honest at the database level.
+
+**`download_events` earns its place** as the abuse signal (§11.4), not as analytics.
+
+---
+
+## 7. Content Pipeline
+
+### 7.1 The ingest contract
+
+A single `catalog.json` at the private repo root is the boundary between authoring and delivery. You publish a GitHub Release, attach the PDF or MP3 as a release asset, and add its entry:
+
+```jsonc
+{
+  "version": 3,
+  "items": [{
+    "slug": "genesis-01-in-the-beginning",
+    "kind": "pdf",
+    "title": "Genesis 1 — In the Beginning",
+    "series": "Commentary",
+    "sortOrder": 1,
+    "releaseTag": "commentary-v1.4",
+    "assetName": "genesis-01.pdf",
+    "accessTier": "subscriber",
+    "publishedAt": "2026-08-20"
+  }]
+}
+```
+
+Everything the app knows about an item comes from here. Nothing is entered twice.
+
+### 7.2 Catalog sync
+
+A route handler at `/api/admin/sync` (admin-only, also cron-triggered) fetches `catalog.json`, resolves each `releaseTag` + `assetName` to a GitHub `asset_id`, upserts `content_items`, and extracts derived metadata: `page_count` via `pdf-lib`, `duration_seconds` via `music-metadata`, `byte_size` and `checksum` from the asset. Items absent from the manifest are soft-deleted, never hard-deleted — existing bookmarks and journals must survive a republish.
+
+**Idempotent by construction.** Sync runs twice, nothing changes. A `checksum` change is what marks an item as revised.
+
+### 7.3 Signed delivery
+
+```
+Browser → GET /api/content/{id}/url
+            ├─ session? ─── no ──→ 401
+            ├─ getEntitlement(userId) vs item.access_tier ─ fail ─→ 402
+            ├─ cache hit? ── yes ─→ return signed R2 URL (long TTL)
+            └─ cache miss ──────→ GitHub API, Accept: octet-stream
+                                   ↳ do NOT follow the 302
+                                   ↳ capture Location (signed, short TTL)
+                                   ↳ queue background copy into R2
+                                   ↳ return the GitHub URL this once
+```
+
+**The GitHub token never leaves the server.** The client receives only a time-limited URL for one asset. This is the entire reason the repo can stay private.
+
+**Do not follow the redirect server-side.** Following it streams the whole file through your server and burns your egress for nothing. Read `Location` off the 302 and hand it over.
+
+### 7.4 Why the cache layer is not optional
+
+Three problems, one fix.
+
+1. **§4.1 throttling risk.** Every cache hit is a GitHub request that does not happen.
+2. **Signed-URL expiry mid-listen.** A 45-minute MP3 outlives a short-TTL URL. The player refreshes via `/api/content/{id}/url` on a 403 during seek — but a longer-lived R2 URL avoids the class of bug entirely.
+3. **Range requests.** Audio seeking requires them. R2 guarantees it; GitHub's signed URL behavior is gated at §4.3 and unconfirmed.
+
+v1 may ship read-through-only, with the R2 write path behind a flag. Design it in now.
+
+---
+
+## 8. The Nine Features
+
+Your list, one subsection each, in your order.
+
+### 8.1 Download PDF from GitHub — *your item 1*
+
+Two readings, both served.
+
+**System ingest:** §7.2 sync pulls the asset reference; §7.3 mints access.
+
+**User download:** `GET /api/content/{id}/download` performs the same entitlement check, writes a `download_events` row, and either redirects to the signed URL or streams a **watermarked** copy.
+
+**Watermarking (recommended, not required).** On first download, stamp a footer on each page: subscriber email, timestamp, and a short opaque token. `pdf-lib` does this in-process. It stops casual redistribution and does not obstruct the honest reader. It is not DRM and is not claimed to be (§3).
+
+### 8.2 Read the PDF — *your item 2*
+
+`react-pdf` over pdf.js, in a dedicated reader route.
+
+- **Text layer enabled** — mandatory, because §8.3 anchors to selected text.
+- Continuous scroll and single-page modes; fit-width, fit-page, pinch zoom.
+- Keyboard: arrows, `j`/`k`, `g` to jump, `/` to search.
+- **Progress written on a debounce** (~3 s idle, or on unmount) to `progress`, not on every scroll event.
+- Resume prompt on reopen: *"Continue from page 47?"*
+- Full-text search within the document via pdf.js's own index.
+
+### 8.3 Reading bookmarks — *your item 3*
+
+Two kinds, deliberately:
+
+| Kind | Anchor | Created by |
+|---|---|---|
+| **Page bookmark** | `page` | The bookmark button |
+| **Highlight** | `page` + `text_anchor` jsonb (quads + the quoted text) | Selecting text |
+
+Storing the **quoted text alongside the coordinates** is what lets a highlight survive a republished PDF whose pagination shifted: coordinates fail, text search recovers it, and the bookmark is flagged *"position approximate"* rather than silently lost. Color labels for categorization. A sidebar lists them; each links straight to its location.
+
+### 8.4 Reading journals — *your item 4*
+
+Prose, in two placements:
+
+- **Anchored** to a bookmark, so a thought sits beside the sentence that caused it.
+- **Free-standing** per item, for a response to the whole.
+
+Markdown, autosaved on a debounce, full-text searchable across the library (Postgres `tsvector` on `body_md`). Exportable as Markdown, per item or as the complete journal.
+
+Journals are private, always, and never enter the review pipeline.
+
+### 8.5 Stripe subscription — *your item 5*
+
+Full design in §9.
+
+### 8.6 Download MP3 from GitHub — *your item 7*, and playback
+
+Same pipeline as §8.1. Playback is where the work is.
+
+- **One `<audio>` element**, mounted in the root layout, owned by React context. It survives navigation, so the player does not restart when you browse to another page.
+- **Media Session API** for lock-screen art, title, and headphone controls.
+- Speed control (0.75×–2×), 15-second skip, sleep timer.
+- **Position saved every 10 s and on pause/unload** via `navigator.sendBeacon`, so closing the tab does not lose your place.
+- Offline listening via PWA + Cache Storage, gated on entitlement at cache time.
+
+### 8.7 Listening bookmarks — *your item 8*
+
+Timestamp-anchored, same table, `kind='listening'`. Marking while playing captures `position_seconds` **minus a 5-second lead-in**, because you always realize a passage mattered slightly after it started. Labels and colors as in §8.3. The sidebar seeks on click.
+
+### 8.8 Listening journals — *your item 9*
+
+§8.4 exactly, anchored to a timestamp instead of a page. Shared component, shared table, shared search index.
+
+### 8.9 Reviews — *your item 6*
+
+Full design in §10.
+
+---
+
+## 9. Payments & Entitlement
+
+### 9.1 Products
+
+Defined in the Stripe dashboard, never in code. Monthly and annual prices on one product; annual discounted. Optional 7-day trial. **Price IDs live in env vars**, so switching prices never ships a deploy.
+
+### 9.2 Flows
+
+| Flow | Mechanism |
+|---|---|
+| Subscribe | **Stripe Checkout**, hosted, redirect out and back |
+| Manage, update card, cancel | **Stripe Customer Portal**, hosted |
+| Recover failed payment | Stripe Smart Retries + dunning emails |
+
+Nothing about billing is hand-built. Card data never touches your servers, which keeps PCI scope at SAQ-A.
+
+### 9.3 Webhooks — the part that goes wrong
+
+`POST /api/stripe/webhook`, Node runtime.
+
+**The gotcha that costs an afternoon:** signature verification needs the *raw, unparsed* body. In the App Router, read it with `await req.text()` and pass that string to `stripe.webhooks.constructEvent` together with the `stripe-signature` header. Any middleware or parser that touches the body first breaks verification with a misleading error.
+
+Events handled: `checkout.session.completed`, `customer.subscription.created|updated|deleted`, `invoice.paid`, `invoice.payment_failed`.
+
+Three rules:
+
+1. **Webhooks are the only writer** of `subscriptions`. Success redirects update nothing — a user who closes the tab mid-redirect must still get access.
+2. **Idempotent by `event.id`.** Stripe retries. Keep a `processed_events` table and no-op on repeats.
+3. **Verify or reject.** An unverified webhook is an unauthenticated request that grants subscriptions.
+
+### 9.4 Entitlement
+
+```ts
+// server-only, the single source of truth
+async function getEntitlement(userId: string): Promise<'free' | 'subscriber'>
+```
+
+Returns `subscriber` when a row exists with status `active` or `trialing` and `current_period_end` in the future. Called by every gated route and every gated Server Component. `past_due` keeps access through the grace window; `canceled` retains access until `current_period_end` — the user paid for the period.
+
+---
+
+## 10. Reviews & Moderation
+
+> Built on assumption **A1** (§0). If you meant something else, this section is the one to delete.
+
+### 10.1 Shape
+
+One review per user per item (`UNIQUE (user_id, item_id)`), editable afterward. A 1–5 rating and optional prose. **Only users with recorded progress on an item may review it** — no reviews of things nobody opened.
+
+Item pages show the aggregate, the distribution, and published reviews newest-first.
+
+### 10.2 Moderation
+
+Reviews are public user content, so they need a pipeline, not good intentions:
+
+1. Submit → `status='pending'`.
+2. Automated pass: profanity list, link and contact-detail stripping, a length floor.
+3. Clean reviews auto-publish; flagged ones queue for you.
+4. Admin queue: publish, reject with reason, or ban the author.
+5. Any user can report a published review, which returns it to the queue.
+
+Rate limit: one submission per user per item per hour, to make abuse tedious.
+
+### 10.3 Author's note
+
+You will eventually receive a review you disagree with. The moderation queue exists for abuse, not for disagreement, and a library whose owner deletes criticism is worth less than one that does not. Write the rejection reasons down before you need them.
+
+---
+
+## 11. Security & Privacy
+
+- **Secrets are server-only.** `GITHUB_TOKEN`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `DATABASE_URL` — never in a `NEXT_PUBLIC_` variable, never imported into a Client Component. A fine-grained GitHub PAT scoped to the one repo, read-only, rotated on a calendar.
+- **Entitlement on the server, always** (§5.2). Hiding a button is not access control.
+- **Signed URLs are short-lived and single-asset.** No URL grants a second file.
+- **Journals are private.** They are never indexed publicly, never used for recommendations, never included in any export you receive as admin. Say so in the privacy policy and mean it.
+- **Rate limits** on `/api/content/*/url`, `/api/content/*/download`, and review submission. `download_events` feeds the abuse signal: one account pulling the entire catalog in an hour is a shared credential.
+- **Standard hygiene**: CSRF on mutations, `httpOnly` `secure` `sameSite` session cookies, a CSP that permits pdf.js workers and blob URLs, parameterized queries via Drizzle, Zod validation at every route boundary.
+- **GDPR**: export and delete endpoints covering users, progress, bookmarks, journals, reviews, and the Stripe customer.
+
+---
+
+## 12. UI
+
+| Route | Purpose |
+|---|---|
+| `/` | Marketing page, pricing, sample content |
+| `/library` | Catalog with series grouping, filters, resume-where-you-left-off rail |
+| `/read/[slug]` | PDF reader, bookmarks sidebar, journal panel |
+| `/listen/[slug]` | Audio page, chapters, bookmarks sidebar, journal panel |
+| `/notes` | Every bookmark and journal, cross-library, full-text searchable |
+| `/account` | Subscription status, Customer Portal link, data export |
+| `/admin` | Catalog sync, moderation queue, subscriber overview |
+
+Notes: the persistent player docks at the bottom across every route. Dark mode is a reading feature, not a preference. Type scale, line length, and margins are the product on `/read` — respect the reader's font-size choice rather than fixing it in pixels. Keyboard navigation throughout; screen-reader labels on every bookmark and player control.
+
+---
+
+## 13. Testing
+
+- **Unit** (Vitest): entitlement matrix across every subscription status and period boundary; catalog-sync idempotency; bookmark anchor serialization and recovery-by-text; watermark generation.
+- **Webhooks** (the important suite): Stripe CLI fixtures for all six events, replayed out of order and duplicated, asserting that `subscriptions` converges to the same state either way. Plus a tampered-signature test that must be rejected.
+- **Integration**: content route returns 401 without a session, 402 without entitlement, and a signed URL with one — asserted against a real Postgres in CI.
+- **E2E** (Playwright): sign up → subscribe with Stripe test card → open a PDF → bookmark → journal → sign out → sign back in → verify position, bookmark, and journal all survived.
+- **Load**: signed-URL minting under concurrency, to size the cache before launch rather than after.
+
+---
+
+## 14. Build Phases
+
+| Phase | Deliverable | Done when |
+|---|---|---|
+| **P0** | Scaffold | Next.js + Drizzle + Auth.js; sign in, see an empty library |
+| **P1** | Content pipeline | `catalog.json` syncs; a gated PDF resolves to a signed URL for an entitled user and 402s for everyone else |
+| **P2** | Reader | PDF renders, progress persists across sessions, resume prompt works |
+| **P3** | Bookmarks + journals (reading) | Highlight survives a republished PDF via text recovery |
+| **P4** | Stripe | Full webhook suite green; subscribe, cancel, and lapse all produce correct entitlement |
+| **P5** | Audio | Player survives navigation, position persists, Media Session controls work |
+| **P6** | Bookmarks + journals (listening) | Shared components carry both halves; `/notes` searches across everything |
+| **P7** | Reviews + moderation | Queue works; report flow returns a published review to it |
+| **P8** | Cache layer + hardening | R2 read-through live; rate limits, CSP, GDPR endpoints in place |
+
+P4 before P5 is deliberate: billing is the feature most likely to reveal a wrong assumption, and it is cheaper to learn that before the audio work than after.
+
+---
+
+## 15. Open Questions
+
+1. **Which assumption in §0 is wrong?** A1 most likely. Answer it before P7.
+2. **Free tier shape.** Which items are `access_tier='free'`, and does a free account get bookmarks and journals? Recommendation: yes — they are the reason people return, and they make the subscription feel like a continuation rather than a purchase.
+3. **Series and ordering.** `catalog.json` carries `series` and `sortOrder`; is the library a linear course, a reference shelf, or both?
+4. **Republished content.** When a PDF is revised and pagination moves, §8.3's text recovery handles highlights. What should the user *see*? Silent repair, or a notice that the source changed?
+5. **Team or church accounts.** A single congregation buying twenty seats changes the schema. Not v1, but knowing whether it is coming affects whether `subscriptions` keys on `user_id` or on an `org_id`.
+6. **Email.** Transactional (receipts, dunning) is Stripe's. New-content announcements are yours, and need a provider and a preferences table.
+7. **Are the PDFs and MP3s yours to sell?** Not a technical question, and the one most likely to matter. Content licensing sits outside this spec entirely.
+
+---
+
+## 16. Sources
+
+Checked 2026-08-29.
+
+| Source | What it established |
+|---|---|
+| [GitHub Acceptable Use Policies](https://docs.github.com/en/site-policy/acceptable-use-policies/github-acceptable-use-policies) | Bandwidth discretion: GitHub may throttle, suspend, or delete repos for excessive use. The §4.1 constraint and the reason for §7.4. |
+| [App Store Review Guidelines](https://developer.apple.com/app-store/review/guidelines/) | 3.1.1 requires IAP to unlock content in an app; 3.1.3(a) reader-app carve-out covers "books, audio." Establishes §4.2 — irrelevant to the web build, decisive for any future native client. |
+| [note.md](note.md) | Project context. |
+| [SPEC.1.md](SPEC.1.md) · [SPEC.2.md](SPEC.2.md) | Sibling specs; house style and the iOS constraint set. |
+
+---
+
+*No code has been written and nothing has been run. This is a specification.*
