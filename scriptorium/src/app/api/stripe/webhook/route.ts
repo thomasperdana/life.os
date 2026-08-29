@@ -2,6 +2,7 @@ import type Stripe from 'stripe'
 import { eq } from 'drizzle-orm'
 import { db, subscriptions, processedEvents, purchases } from '@/db'
 import { stripeWebhooks, toSubStatus, STARTER_SLOTS } from '@/lib/stripe'
+import { TRIAL_DAYS } from '@/lib/redeem-codes'
 
 export const runtime = 'nodejs'
 
@@ -69,9 +70,28 @@ async function apply(event: Stripe.Event) {
       const userId = s.client_reference_id ?? s.metadata?.userId
       if (!userId) return
 
-      // A one-time bundle grants slots and creates NO subscription row.
       if (s.mode === 'payment') {
         if (s.payment_status !== 'paid') return
+
+        // The $1 trial: 14 days of full access, then it simply lapses. Recorded
+        // as a `trialing` row with cancel_at_period_end so the ONE access rule
+        // in getEntitlement covers it — there is no Stripe subscription behind
+        // it, so nothing can auto-charge at the end.
+        if (s.metadata?.plan === 'trial') {
+          const customerId = typeof s.customer === 'string' ? s.customer : s.customer?.id
+          await db.insert(subscriptions).values({
+            userId,
+            stripeCustomerId: customerId ?? `trial_${s.id}`,
+            stripeSubscriptionId: null,
+            status: 'trialing',
+            priceId: process.env.STRIPE_PRICE_TRIAL ?? null,
+            currentPeriodEnd: new Date(Date.now() + TRIAL_DAYS * 86400_000),
+            cancelAtPeriodEnd: true,
+            updatedAt: new Date(event.created * 1000),
+          }).onConflictDoNothing()
+          return
+        }
+
         await db.insert(purchases).values({
           userId,
           stripeSessionId: s.id,

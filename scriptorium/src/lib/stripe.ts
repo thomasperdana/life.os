@@ -48,12 +48,15 @@ export const PRICES = {
   get starter() { return process.env.STRIPE_PRICE_STARTER },
   /** $297/year — the whole library. */
   get unlimited() { return process.env.STRIPE_PRICE_UNLIMITED },
+  /** $1 one-time — 14 days of full access. Does NOT renew (§9.5). */
+  get trial() { return process.env.STRIPE_PRICE_TRIAL },
 }
 
 /** How many studies a one-time purchase grants. */
 export const STARTER_SLOTS = 10
 
-/** Stripe's subscription statuses, narrowed to the enum in our schema. */
+export { TRIAL_DAYS, REDEEM_CODES, normaliseCode } from './redeem-codes'
+
 export type SubStatus =
   | 'active' | 'trialing' | 'past_due' | 'canceled'
   | 'incomplete' | 'incomplete_expired' | 'unpaid'

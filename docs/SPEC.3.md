@@ -622,7 +622,32 @@ Live prices (created 2026-08-29):
 |---|---|---|---|
 | **Starter Bundle** | **$197 one-time** | `payment` | 10 slots, each spent on one study, kept permanently |
 | **Unlimited** | **$297 / year** | `subscription` | The whole library while active |
-| Founder discount | `FOUNDER-50` | 50% off first payment | Applies to either |
+| **14-Day Trial** | **$1 one-time** | `payment` | 14 days of full access, then lapses. No renewal, no auto-charge |
+| Founder discount | `FOUNDER-50` | 50% off first payment | Starter or Unlimited |
+
+### 9.5 Redeemable codes
+
+Both codes were requested with periods (`TRIAL.1`, `FOUNDER.50`). **Stripe promotion codes accept
+only letters, digits and dashes**, so the live codes are `TRIAL-1` and `FOUNDER-50`;
+`normaliseCode` maps periods, spaces and underscores to dashes so a reader typing either form
+succeeds.
+
+They work by different mechanisms behind one input box:
+
+- **`FOUNDER-50`** is a real Stripe promotion code, applied to checkout via `discounts`.
+- **`TRIAL-1`** is *not* a promotion code. A coupon discounts whole invoices by duration, so on a
+  yearly plan a $296-off coupon buys a full year for $1, not a fortnight. The trial is therefore
+  its own **$1 one-time product**; paying for it writes a `trialing` row with
+  `current_period_end = now + 14 days` and **no `stripe_subscription_id`**, so there is nothing
+  Stripe could renew and no card can be charged when it lapses.
+
+**Scope.** The account holds nine active products, only two of them Scriptorium. An unrestricted
+coupon would have discounted a $12,497/yr package by $6,248 per redemption, so the coupon carries
+`applies_to.products` naming exactly the two Scriptorium products, and the original account-wide
+coupon was deleted.
+
+**One trial per account, ever** — a lapsed trial still counts as used, or the $1 fortnight renews
+forever at a dollar a fortnight. When it expires the app points the reader at `FOUNDER-50`.
 
 ```ts
 type Plan = 'free' | 'bundle' | 'full'
@@ -816,6 +841,12 @@ auth exercised end to end against the live project). Everything from P1 onward i
     development for no security gain. Guard outbound calls, not local crypto.
 17. Stripe promotion codes accept only letters, digits, and dashes. `FOUNDER.50` is not a legal
     code; it was created as `FOUNDER-50`.
+19. A Stripe coupon's `applies_to` is **absent from the create response and not returned by
+    `retrieve` unless expanded**. Reading it without `expand: ['applies_to']` makes a correctly
+    restricted coupon look account-wide — which briefly looked like a live security hole and was
+    not one. Always expand before asserting on it.
+20. `applies_to` is immutable, as is a promotion code's coupon. Rescoping an existing code means a
+    new coupon, deactivating the old code, and recreating it — which frees the code string.
 18. A test suite that asserts absolute counts against shared demo content fails the moment anyone
     uses the demo by hand. Suites create their own fixtures.
 15. `worker-src blob:` is mandatory in the CSP or pdf.js silently renders nothing — its parser runs

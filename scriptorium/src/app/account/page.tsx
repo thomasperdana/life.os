@@ -6,6 +6,8 @@ import { createClient } from '@/lib/supabase/server'
 import { getEntitlement } from '@/lib/entitlement'
 import { stripeConfigured } from '@/lib/stripe'
 import { BillingButtons } from './BillingButtons'
+import { RedeemBox } from './RedeemBox'
+import { PRICES } from '@/lib/stripe'
 
 export const dynamic = 'force-dynamic'
 
@@ -65,7 +67,14 @@ export default async function AccountPage() {
       </section>
 
       {stripeConfigured() ? (
-        <BillingButtons hasCustomer={Boolean(sub?.stripeCustomerId)} plan={entitlement.plan} />
+        <>
+          <RedeemBox
+            trialUsed={Boolean(sub?.priceId && sub.priceId === PRICES.trial)}
+            plan={entitlement.plan}
+            trialEndsAt={sub?.priceId === PRICES.trial ? (sub.currentPeriodEnd?.toISOString() ?? null) : null}
+          />
+          <BillingButtons hasCustomer={Boolean(sub?.stripeCustomerId)} plan={entitlement.plan} />
+        </>
       ) : (
         <p className="text-sm text-black/50 dark:text-white/50">
           Billing is not configured on this deployment.
