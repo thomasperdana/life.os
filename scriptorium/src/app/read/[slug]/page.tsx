@@ -78,6 +78,7 @@ export default async function ReadPage({
         urlExpiresAt={expiresAt.toISOString()}
         totalPages={item.pageCount ?? undefined}
         initialPage={initialPage}
+        checksum={item.checksum}
       />
     </>
   )

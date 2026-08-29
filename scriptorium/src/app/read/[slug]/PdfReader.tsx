@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { Document, Page, pdfjs } from 'react-pdf'
+import { useMarks } from './useMarks'
+import { MarksPanel } from './MarksPanel'
+import { recoverAnchor, type TextAnchor } from '@/lib/anchor'
 import 'react-pdf/dist/Page/TextLayer.css'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 
@@ -18,11 +21,17 @@ type Props = {
   urlExpiresAt: string
   totalPages?: number
   initialPage?: number
+  checksum?: string | null
 }
 
 export function PdfReader({
-  itemId, title, fileUrl, urlExpiresAt, totalPages, initialPage,
+  itemId, title, fileUrl, urlExpiresAt, totalPages, initialPage, checksum,
 }: Props) {
+  const marks = useMarks(itemId)
+  const [panelOpen, setPanelOpen] = useState(false)
+  const [pendingSel, setPendingSel] = useState<{ page: number; text: string } | null>(null)
+  const [pagesText, setPagesText] = useState<string[]>([])
+  const docRef = useRef<import('pdfjs-dist').PDFDocumentProxy | null>(null)
   const [numPages, setNumPages] = useState(totalPages ?? 0)
   const [page, setPage] = useState(initialPage && initialPage > 0 ? initialPage : 1)
   const [scale, setScale] = useState(1.2)
@@ -176,6 +185,82 @@ export function PdfReader({
     return () => window.removeEventListener('keydown', onKey)
   }, [page, goTo])
 
+  // ── text extraction + anchor recovery (§8.3) ────────────────────────────
+  const onDocumentLoad = useCallback(async (doc: import('pdfjs-dist').PDFDocumentProxy) => {
+    docRef.current = doc
+    setNumPages(doc.numPages)
+    setDocLoaded(true)
+    setLoadError(null)
+
+    const texts: string[] = []
+    for (let i = 1; i <= doc.numPages; i++) {
+      const content = await (await doc.getPage(i)).getTextContent()
+      texts.push(content.items.map((it) => ('str' in it ? it.str : '')).join(' '))
+    }
+    setPagesText(texts)
+  }, [])
+
+  /**
+   * Where does each bookmark actually live right now?
+   *
+   * If the PDF has not changed since the highlight was made, its stored page is
+   * authoritative. If it HAS changed, the geometry is worthless and the quoted
+   * text is the only durable anchor — so we re-find it and mark the result as
+   * approximate rather than silently pretending the old page still applies.
+   */
+  const recovery = useMemo(() => {
+    const map = new Map<string, { page: number; approximate: boolean } | null>()
+    for (const b of marks.bookmarks) {
+      const anchor = b.textAnchor as TextAnchor | null
+      if (!anchor?.quotedText) {
+        map.set(b.id, b.page ? { page: b.page, approximate: false } : null)
+        continue
+      }
+      if (checksum && anchor.sourceChecksum === checksum) {
+        map.set(b.id, { page: b.page ?? 1, approximate: false })
+        continue
+      }
+      if (!pagesText.length) { map.set(b.id, b.page ? { page: b.page, approximate: false } : null); continue }
+      const r = recoverAnchor(anchor.quotedText, pagesText, b.page ?? undefined)
+      map.set(b.id,
+        r.status === 'lost' ? null
+        : { page: r.page, approximate: r.status === 'relocated' || r.page !== b.page })
+    }
+    return map
+  }, [marks.bookmarks, pagesText, checksum])
+
+  // ── text selection -> highlight ─────────────────────────────────────────
+  useEffect(() => {
+    const onUp = () => {
+      const sel = window.getSelection()
+      const text = sel?.toString().trim() ?? ''
+      if (!text || text.length < 2) { setPendingSel(null); return }
+      const node = sel!.anchorNode as HTMLElement | null
+      const wrapper = (node?.nodeType === 3 ? node.parentElement : node)?.closest('[data-page]')
+      const p = wrapper ? Number((wrapper as HTMLElement).dataset.page) : page
+      setPendingSel({ page: p || page, text: text.slice(0, 5000) })
+    }
+    document.addEventListener('mouseup', onUp)
+    document.addEventListener('touchend', onUp)
+    return () => {
+      document.removeEventListener('mouseup', onUp)
+      document.removeEventListener('touchend', onUp)
+    }
+  }, [page])
+
+  const highlightSelection = useCallback(async (color: string) => {
+    if (!pendingSel) return
+    const anchor: TextAnchor = {
+      quads: [], // geometry is a fast path only; quotedText is what survives
+      quotedText: pendingSel.text,
+      sourceChecksum: checksum ?? '',
+    }
+    await marks.addBookmark({ page: pendingSel.page, textAnchor: anchor, color })
+    window.getSelection()?.removeAllRanges()
+    setPendingSel(null)
+    setPanelOpen(true)
+  }, [pendingSel, marks, checksum])
+
   const pct = numPages ? Math.round((page / numPages) * 100) : 0
 
   return (
@@ -208,6 +293,17 @@ export function PdfReader({
               {mode === 'scroll' ? 'Scroll' : 'Single'}
             </button>
           </div>
+
+          <div className="flex items-center gap-1 text-xs">
+            <button onClick={() => marks.addBookmark({ page })} title="Bookmark this page"
+              aria-label="Bookmark this page"
+              className="px-2 py-1 rounded hover:bg-black/5 dark:hover:bg-white/10">☆</button>
+            <button onClick={() => setPanelOpen((o) => !o)}
+              aria-label="Toggle bookmarks and journal"
+              className="px-2 py-1 rounded hover:bg-black/5 dark:hover:bg-white/10">
+              Notes{marks.bookmarks.length ? ` (${marks.bookmarks.length})` : ''}
+            </button>
+          </div>
         </div>
         <div className="h-0.5 bg-black/5 dark:bg-white/10">
           <div className="h-full bg-foreground/60 transition-all" style={{ width: `${pct}%` }} />
@@ -221,13 +317,43 @@ export function PdfReader({
         </div>
       )}
 
-      <main ref={containerRef} className="flex-1 px-4 py-6">
+      {pendingSel && (
+        <div role="dialog" aria-label="Highlight selection"
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 rounded-full border border-black/15 dark:border-white/20 bg-background px-3 py-2 shadow-lg">
+          <span className="text-xs text-black/60 dark:text-white/60 max-w-[16rem] truncate">
+            “{pendingSel.text}”
+          </span>
+          {(['yellow', 'green', 'blue', 'pink'] as const).map((c) => (
+            <button key={c} onClick={() => highlightSelection(c)}
+              aria-label={`Highlight ${c}`}
+              className="h-5 w-5 rounded-full border border-black/20 dark:border-white/25"
+              style={{ background: { yellow: '#fde68a', green: '#bbf7d0', blue: '#bfdbfe', pink: '#fbcfe8' }[c] }} />
+          ))}
+          <button onClick={() => { setPendingSel(null); window.getSelection()?.removeAllRanges() }}
+            className="text-xs text-black/50 dark:text-white/50 px-1">✕</button>
+        </div>
+      )}
+
+      {panelOpen && (
+        <MarksPanel
+          bookmarks={marks.bookmarks}
+          itemJournal={marks.journalFor(null)}
+          journalFor={marks.journalFor}
+          recovery={recovery}
+          onGoTo={(p) => { goTo(p); }}
+          onRemove={marks.removeBookmark}
+          onSaveJournal={marks.saveJournal}
+          onClose={() => setPanelOpen(false)}
+        />
+      )}
+
+      <main ref={containerRef} className={`flex-1 px-4 py-6 ${panelOpen ? 'sm:mr-96' : ''}`}>
         {loadError ? (
           <p role="alert" className="text-center text-sm text-red-600 dark:text-red-400">{loadError}</p>
         ) : (
           <Document
             file={file}
-            onLoadSuccess={({ numPages: n }) => { setNumPages(n); setDocLoaded(true); setLoadError(null) }}
+            onLoadSuccess={onDocumentLoad}
             onLoadError={(e) => setLoadError(e.message)}
             loading={<p className="text-center text-sm text-black/50 dark:text-white/50 py-16">Loading…</p>}
             className="flex flex-col items-center gap-6"

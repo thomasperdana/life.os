@@ -1,6 +1,7 @@
 # SPEC — Scriptorium: a PDF + Audio Library SaaS on Next.js, Supabase, and Vercel
 
-> **Status:** **P0, P1 and P2 built and verified** against a live Supabase project (2026-08-29); P3 onward specified, not built.
+> **Status:** **P0–P4 built and verified** against a live Supabase project (2026-08-29); P5 onward specified, not built.
+> Stripe's webhook handler is fully verified offline with real signatures; Checkout and the Customer Portal need live API keys and are **not** yet exercised.
 > Implementation: [`../scriptorium`](../scriptorium).  Working name **Scriptorium** (proposed).
 > **Written:** 2026-08-29 · **Spec version:** 3.2.0
 > **Repo:** `/Volumes/181TB/Developers-LLC/life.os` · **Siblings:** [SPEC.1.md](SPEC.1.md), [SPEC.2.md](SPEC.2.md) (the iOS Bible-study app; different product, same house style)
@@ -455,7 +456,30 @@ Two kinds, deliberately:
 | **Page bookmark** | `page` | The bookmark button |
 | **Highlight** | `page` + `text_anchor` jsonb (quads + the quoted text) | Selecting text |
 
-Storing the **quoted text alongside the coordinates** is what lets a highlight survive a re-uploaded PDF whose pagination shifted: coordinates fail, text search recovers it, and the bookmark is flagged *"position approximate"* rather than silently lost. This matters more now than it did before, because re-uploading a corrected PDF is a two-click operation (§7.2). Color labels for categorization; a sidebar lists them, each linking to its location.
+Storing the **quoted text alongside the coordinates** is what lets a highlight survive a re-uploaded
+PDF whose pagination shifted: coordinates fail, text search recovers it, and the bookmark is flagged
+*"position approximate"* rather than silently lost. This matters more now than it did before, because
+re-uploading a corrected PDF is a two-click operation (§7.2). Color labels for categorization; a
+sidebar lists them, each linking to its location.
+
+**How recovery decides** (`src/lib/anchor.ts`, pure and unit-tested):
+
+1. The anchor stores `sourceChecksum`. If it still matches the item's checksum, the file has not
+   changed and the stored page is authoritative. No searching happens.
+2. If the checksum differs, the geometry is worthless. The quoted text is searched across every
+   page's extracted text. A single exact hit wins outright.
+3. Multiple exact hits are broken **toward the page the highlight was originally on** — a repeated
+   phrase should resolve to the nearest occurrence, not to page 1.
+4. No exact hit falls back to a sliding-window Dice-coefficient match, which recovers lightly
+   edited passages. Below a 0.6 score it returns **lost** rather than guessing.
+5. Anything that moved, or that was recovered fuzzily, is surfaced as *"position approximate"*. A
+   bookmark whose text is gone is surfaced as *"text not found"*, never silently repositioned.
+
+> **Known limitation, found by testing.** A highlight on a phrase that repeats throughout a document
+> (a running header, a refrain, boilerplate) cannot be relocated reliably — rule 3 keeps it near
+> where it was, which is the least-wrong answer available, but it is a guess. Unique prose relocates
+> exactly; repeated text does not. This is inherent to text anchoring, not a defect in the
+> implementation, and the *"approximate"* badge is what keeps it honest.
 
 ### 8.4 Reading journals — *your item 4*
 
@@ -546,6 +570,17 @@ Four rules:
 2. **Idempotent by `event.id`**, recorded in `processed_events`. Stripe retries; no-op on repeats.
 3. **Verify or reject.** An unverified webhook is an unauthenticated request that grants subscriptions.
 4. **Write with the service-role key.** The webhook has no user session, so it must bypass RLS (§5.2).
+5. **Stamp `userId` into `subscription_data.metadata` at Checkout.** Every later `customer.subscription.*`
+   event then carries the user it belongs to, so delivery order stops mattering. Without this, a
+   subscription event arriving before `checkout.session.completed` has no user to attach to.
+6. **Guard against stale events by timestamp.** Stripe does not guarantee order, so an older event
+   arriving late must not overwrite newer state. The row's `updated_at` holds the `event.created`
+   that last wrote it; anything older is acknowledged and ignored.
+7. **Record the event only after the handler succeeds.** Writing to `processed_events` first would
+   turn a transient failure into permanent data loss, because Stripe's retry would be swallowed as
+   a duplicate.
+8. **`invoice.*` events never invent a status.** They may move `active` → `past_due`, but the
+   authoritative status always comes from the `customer.subscription.*` events.
 
 ### 9.4 Entitlement
 
@@ -645,8 +680,8 @@ Notes: the persistent player docks at the bottom across every route. Dark mode i
 | **P0** ✅ | Scaffold | **DONE 2026-08-29.** 9 tables live on PostgreSQL 17.6, RLS on all 9 with 10 policies, signup trigger, both buckets, Supabase Auth sign-in verified 7/7 end to end, `/library` renders empty |
 | **P1** ✅ | Upload + download, both formats | **DONE 2026-08-29.** 16/16 storage + validation checks and 13/13 HTTP gate checks green against the live project: magic-byte validation rejects forged files, oversize refused pre-ticket, admin gate returns 401/403/200 correctly, serving gate returns 401 → 404 (draft) → 402 (unentitled) → 200 + signed URL in that order, PDF TTL 5 min |
 | **P2** ✅ | Reader | **DONE 2026-08-29.** 18/18 automated checks plus browser verification: 8 pages render with live text layers (24 selectable spans), scroll tracking updates the page counter, position persists on a 3s debounce, and the resume prompt returns the reader to the saved page |
-| **P3** | Bookmarks + journals (reading) | Highlight survives a re-uploaded PDF via text recovery |
-| **P4** | Stripe | Full webhook suite green; subscribe, cancel, and lapse all produce correct entitlement |
+| **P3** ✅ | Bookmarks + journals (reading) | **DONE 2026-08-29.** 13/13 anchor-recovery checks, 20/20 API checks, plus browser proof: a highlight stored on page 8 was re-found on page 9 after the PDF was re-uploaded with a page inserted, and the panel showed "Page 9 · position approximate" |
+| **P4** ⚠️ | Stripe | **Webhooks DONE 2026-08-29** — 24/24 signed-payload checks and 13/13 account-UI checks: subscribe, payment failure, cancel-at-period-end, lapse, replay, out-of-order, and reverse-order convergence all produce correct entitlement. **Checkout + Portal built but unverified** — they require live Stripe keys |
 | **P5** | Audio | **Range-request gate (§4.4) confirmed first.** Player survives navigation, position persists, Media Session controls work |
 | **P6** | Bookmarks + journals (listening) | Shared components carry both halves; `/notes` searches across everything |
 | **P7** | Reviews + moderation | Queue works; report flow returns a published review to it |
@@ -706,3 +741,9 @@ auth exercised end to end against the live project). Everything from P1 onward i
    effects on a separate `docLoaded` flag.
 7. React SSR emits `<!-- -->` between static text and interpolated values, so `Continue from page 11`
    is not a literal substring of the HTML. Strip comment markers before asserting on rendered text.
+8. Deleting a bookmark must **detach** its journal, not cascade-delete it. Prose the reader wrote is
+   worth more than the anchor it hung on.
+9. Autosave needs one debounce timer **per journal target**. A single shared timer lets a note being
+   edited in one panel overwrite another's pending save.
+10. Under Bun, Stripe's `generateTestHeaderString` throws — SubtleCrypto has no synchronous path.
+    Use `generateTestHeaderStringAsync`. This affects tests only, not the handler.

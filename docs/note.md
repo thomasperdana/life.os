@@ -48,3 +48,5 @@ Summarize the main theological points of John 3:16 KJV based on our study. How c
 https://github.com/thomasperdana/life.os/tree/main/scriptorium
 https://supabase.com/dashboard/project/vkbosgojzcwmskuymlxu/settings/general
 https://vercel.com/thomas-perdanas-projects/life-os
+
+Demo left seeded for you: demo@scriptorium.test / DemoPassword123! at /read/demo-reader
